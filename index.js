@@ -648,6 +648,7 @@ function createWindow() {
         width:  1024, // 창 너비
         height: 768, // 창 높이
         title: `XDViewer v${app.getVersion()}`, // 타이틀바에 버전 표시
+        icon: path.join(__dirname, 'build', 'icon.ico'), // 창·작업표시줄 아이콘 (설치본 exe 아이콘은 electron-builder win.icon)
         autoHideMenuBar: true, // 메뉴바 자동 숨김
         webPreferences: {
             webgl: true,

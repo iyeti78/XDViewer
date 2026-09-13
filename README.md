@@ -125,6 +125,8 @@ $ npm start
 ```
 ![실행](image.png)
 
+앱 아이콘 원본은 `build/icon.svg`이고, 바꾼 뒤에는 `electron build/make-icon.js`로 `icon.ico`/`icon.png`를 다시 만든다.
+
 배포본(Windows NSIS 설치 파일)은 `dist/` 아래에 생성된다.
 ```bash
 $ npm run dist            # electron-builder (publish 설정은 package.json의 build.publish)
