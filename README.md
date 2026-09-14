@@ -44,6 +44,8 @@
 - 드래그앤드롭 입력:
   - 파일: `.geojson`, `.csv`, `.meta`(layer.meta), `tileset.json`, `.glb/.gltf`, `.3ds`, `.gpkg/.sdb/.sqlite`
   - 폴더: `layer.meta` 폴더(XDWorld 배치), `tileset.json` 폴더(3D Tiles), 숫자 레벨 피라미드(세슘/raw 영상 타일)
+- 경로/URL 입력:
+  - 레이어 패널 상단 입력창에 **절대경로(파일·폴더)**, `file://` URL, 또는 **http(s) URL**을 붙여 넣고 Enter. URL은 `tileset.json`(3D Tiles), `layer.meta`(원격 XDWorld 레이어, 타일을 HTTP로 요청), `.geojson`을 지원. 브라우저에서 URL을 끌어다 놓아도 같은 경로로 로딩.
 - 레이어 목록:
   - 항목 앞에 종류 아이콘 표시(영상·표고 영상·지형·3D Tiles·3D 모델·벡터·포인트·파이프·포인트클라우드). 체크박스로 표시/숨김, × 로 제거.
 - 카메라:

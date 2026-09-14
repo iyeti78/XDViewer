@@ -172,11 +172,11 @@
                     <button id="openLayer">+</button>
                 </div>
                 <div class="panel-content">
-                    <!-- URL로 tileset.json 추가 -->
+                    <!-- 경로/URL로 레이어 추가 (드롭 대신 텍스트) -->
                     <div style="display:flex; gap:4px; padding:6px 8px;">
-                        <input type="text" id="tilesetUrlInput" placeholder="tileset.json URL 붙여넣기"
+                        <input type="text" id="tilesetUrlInput" placeholder="경로 또는 URL 붙여넣기 (tileset.json · layer.meta · .geojson · .gpkg · 폴더)"
                             style="flex:1; min-width:0; padding:4px 6px; font-size:12px; background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:4px;" />
-                        <button id="addUrlBtn" title="URL 레이어 추가"
+                        <button id="addUrlBtn" title="경로/URL로 레이어 추가"
                             style="padding:4px 8px; font-size:12px; cursor:pointer;">추가</button>
                     </div>
                     <!-- 레이어 아이템들이 추가될 영역 -->
@@ -3229,25 +3229,88 @@
             }); // 메인 프로세스의 파일 선택 다이얼로그 호출
         });
 
-        // URL로 tileset.json 로딩 (파일 대신 http(s) URL 입력)
-        function addTilesetFromUrl() {
-            const input = document.getElementById('tilesetUrlInput');
-            const url = input.value.trim();
-            if (!url) return;
-            if (!/^https?:\/\//i.test(url)) {
-                alert('http(s):// 로 시작하는 URL을 입력하세요.');
+        // ============ 경로/URL 텍스트로 레이어 추가 ============
+        // 드롭 대신 텍스트 한 줄로 받는다.
+        //   로컬 절대경로(파일·폴더, 역슬래시 OK) / file:// URL  → 드롭과 같은 분기(processDroppedFolder / processFilePath)
+        //   http(s) URL: tileset.json → 3D Tiles, layer.meta → 원격 XDWorld 레이어(path를 URL 폴더로 바꿔 엔진이 HTTP로 타일 요청),
+        //               .geojson/.json → GeoJSON
+        async function loadFromInput(raw) {
+            let text = (raw || '').trim().replace(/^["']|["']$/g, '');
+            if (!text) return;
+
+            if (/^file:\/\//i.test(text)) {
+                try {
+                    text = decodeURIComponent(text.replace(/^file:\/{2,3}/i, '')).replace(/^\/([A-Za-z]:)/, '$1');
+                } catch (e) { /* 그대로 둔다 */ }
+            }
+
+            if (/^https?:\/\//i.test(text)) {
+                const url = text.split('#')[0];
+                const pathPart = url.split('?')[0];
+                const lower = pathPart.toLowerCase();
+                const name = decodeURIComponent(pathPart.split('/').pop());
+                const baseUrl = pathPart.substring(0, pathPart.lastIndexOf('/'));
+
+                if (lower.endsWith('tileset.json')) {
+                    processFilePath(url);
+                    return;
+                }
+                if (lower.endsWith('.meta')) {
+                    let meta;
+                    try {
+                        meta = JSON.parse(await window.electronAPI.fetchText(url));
+                    } catch (e) {
+                        alert(`layer.meta를 받지 못했습니다.\n\n${url}\n\n${e.message || e}`);
+                        return;
+                    }
+                    meta.path = baseUrl; // 파일의 path는 서버 로컬 경로라 URL 폴더로 대체
+                    console.log(`원격 layer.meta: ${meta.name} (${meta.type}) <- ${baseUrl}`);
+                    loadMetaLayer(url, { meta: meta, pathOverride: baseUrl });
+                    return;
+                }
+                if (lower.endsWith('.geojson') || lower.endsWith('.json')) {
+                    let data;
+                    try {
+                        data = JSON.parse(await window.electronAPI.fetchText(url));
+                    } catch (e) {
+                        alert(`GeoJSON을 받지 못했습니다.\n\n${url}\n\n${e.message || e}`);
+                        return;
+                    }
+                    if (!data || !data.features || !data.features.length) {
+                        alert('GeoJSON에 feature가 없습니다.\n\n' + url);
+                        return;
+                    }
+                    loadGeojsonLayerFromData(name.replace(/\.(geo)?json$/i, ''), data.features[0].geometry.type, data);
+                    return;
+                }
+                alert('지원하지 않는 URL입니다.\n\n' + url + '\n\n지원: tileset.json, layer.meta, .geojson');
                 return;
             }
-            if (!url.endsWith('tileset.json')) {
-                alert('URL이 tileset.json 으로 끝나야 합니다.\n예: https://example.com/tiles/tileset.json');
+
+            // 로컬 절대경로: 드롭과 같은 분기
+            const p = text.replace(/\\/g, '/').replace(/\/+$/, '');
+            if (!window.electronAPI.pathExists(p)) {
+                alert('경로를 찾을 수 없습니다.\n\n' + text);
                 return;
             }
-            processFilePath(url); // tileset.json 분기로 로딩 (로컬/URL 공통)
-            input.value = '';
+            if (window.electronAPI.isDirectory(p)) {
+                processDroppedFolder(p);
+            } else if (isValidFileType(p)) {
+                processFilePath(p);
+            } else {
+                alert('지원하지 않는 파일 형식입니다.\n\n' + text + '\n\n허용: .geojson, .csv, .meta, .gpkg, .sdb, tileset.json, .glb/.gltf, .3ds');
+            }
         }
-        document.getElementById('addUrlBtn').addEventListener('click', addTilesetFromUrl);
+
+        function addLayerFromInput() {
+            const input = document.getElementById('tilesetUrlInput');
+            const text = input.value.trim();
+            if (!text) return;
+            loadFromInput(text).then(() => { input.value = ''; });
+        }
+        document.getElementById('addUrlBtn').addEventListener('click', addLayerFromInput);
         document.getElementById('tilesetUrlInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') addTilesetFromUrl();
+            if (e.key === 'Enter') addLayerFromInput();
         });
 
         // 드래그 앤 드롭 기능 추가
@@ -3346,6 +3409,11 @@
                 }
 
                 console.log(`Valid files processed: ${validFileCount}, Invalid files: ${invalidFiles.length}`);
+            } else {
+                // 브라우저 주소창·텍스트에서 끌어온 URL/경로
+                const txt = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
+                const line = (txt || '').split(/\r?\n/).find(l => l.trim() && !l.startsWith('#'));
+                if (line) loadFromInput(line);
             }
         }, false);
 

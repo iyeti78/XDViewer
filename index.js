@@ -884,6 +884,14 @@ ipcMain.handle('unregister-image-source', (event, id) => {
     return imageSources.delete(id);
 });
 
+// URL 텍스트 받기. 렌더러는 file:// 출처라 원격 서버가 CORS 헤더를 안 주면 fetch가 막히므로 메인에서 받는다.
+ipcMain.handle('fetch-text', async (event, url) => {
+    if (!/^https?:\/\//i.test(url)) throw new Error('http(s) URL만 받을 수 있습니다');
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    return await res.text();
+});
+
 ipcMain.handle('read-geojson', async (event, filePath) => {
     return await fs.promises.readFile(filePath, 'utf-8');
 });
