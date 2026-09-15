@@ -495,7 +495,26 @@
 .settings-radio-group {
     display: flex;
     gap: 10px;
+    flex-wrap: wrap;
 }
+
+/* 고도 색상 옵션 (숫자 입력은 select와 같은 톤) */
+.settings-number {
+    width: 74px;
+    background: #3c3c3c;
+    color: #cccccc;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+    outline: none;
+}
+.settings-number:focus { border-color: #007acc; }
+#terrainColorOptions { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }
+#terrainColorOptions.open { display: flex; }
+#terrainColorOptions .row { display: flex; align-items: center; gap: 6px; }
+#terrainColorOptions .row .settings-label { margin: 0; min-width: 36px; }
+#terrainColorOptions .unit { color: #858585; font-size: 11px; }
 
 .settings-radio-label {
     display: flex;

@@ -301,9 +301,22 @@ function pngSize(buf) {
  * 단, -wal 사이드카가 실제로 있으면 아직 체크포인트 안 된 내용이 있을 수 있어 일반 모드로 연다.
  */
 function openTileDbFile(file) {
-    if (fs.existsSync(file + '-wal')) return new DatabaseSync(file, { readOnly: true });
-    const uri = 'file:' + file.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/') + '?immutable=1';
-    return new DatabaseSync(uri, { readOnly: true });
+    const immutable = () => new DatabaseSync('file:' + file.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/') + '?immutable=1', { readOnly: true });
+    // -wal에 내용이 있을 때만 일반 모드를 시도한다(0바이트 -wal은 누가 열어만 둔 흔적). 일반 모드는 읽기 전용 폴더에서
+    // 첫 쿼리 때 실패하므로 여기서 한 번 찔러 보고, 안 되면 immutable로 돌아간다.
+    let walSize = 0;
+    try { walSize = fs.statSync(file + '-wal').size; } catch (_) { /* 없음 */ }
+    if (walSize > 0) {
+        const db = new DatabaseSync(file, { readOnly: true });
+        try {
+            db.prepare('SELECT 1 FROM sqlite_master LIMIT 1').get();
+            return db;
+        } catch (e) {
+            try { db.close(); } catch (_) { /* 무시 */ }
+            console.warn(`[openTileDb] 일반 모드 실패(${e.message}) -> immutable: ${file}`);
+        }
+    }
+    return immutable();
 }
 
 function openTileDb(file) {
