@@ -50,8 +50,9 @@
   - 항목 앞에 종류 아이콘 표시(영상·표고 영상·지형·3D Tiles·3D 모델·벡터·포인트·파이프·포인트클라우드). 체크박스로 표시/숨김, × 로 제거.
 - 분석 패널 · 지형 렌더링:
   - Normal / Slope / Aspect / **고도 색상**. 고도 색상은 최소·최대 고도(m, 수심은 음수)와 컬러맵, 불투명도를 정하면 지형(해저 포함)을 높이별 색으로 칠하고 범례를 표시.
-  - 컬러맵은 과학계 표준: 지형·수심용 ETOPO1(GMT/NOAA), GMT relief, GMT globe, cmocean topo(해면 0m 기준으로 바다/육지 분리), 범용 matplotlib terrain, viridis, turbo, grayscale.
-  - F12 콘솔에서도 가능: `XDV.terrainColor(-6000, 4000)` · `XDV.terrainColor(0, 600, 'viridis', 0.8)` · `XDV.terrainNormal()`
+  - 컬러맵은 과학계 표준: 지형·수심용 ETOPO1(GMT/NOAA), GMT relief, GMT globe, cmocean topo(해면 0m 기준으로 바다/육지 분리), 범용 matplotlib terrain, viridis, turbo, grayscale, 그리고 XDWorld 샘플의 Terrain Altitude Color(Standard·Warm·Sea·Plant·Sky).
+  - 색 단계(8~128, 기본 32)를 줄이면 등고선처럼 띠가 뚜렷해지고, 늘리면 연속에 가까워짐. 범례도 같은 띠로 표시.
+  - F12 콘솔에서도 가능: `XDV.terrainColor(-6000, 4000)` · `XDV.terrainColor(0, 600, 'viridis', 0.8, 16)` · `XDV.terrainNormal()`
 - 카메라:
   - 줌아웃 고도 상한 5,000만 m. 무제한으로 멀어져 지구본이 사라지는 것을 막는다(휠 차단 + 프레임 단위 되돌림).
 

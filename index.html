@@ -309,6 +309,25 @@
                                         <option value="turbo">turbo</option>
                                         <option value="gray">grayscale</option>
                                     </optgroup>
+                                    <optgroup label="XDWorld Terrain Altitude Color">
+                                        <option value="xd_standard">Standard</option>
+                                        <option value="xd_warm">Warm</option>
+                                        <option value="xd_sea">Sea</option>
+                                        <option value="xd_plant">Plant</option>
+                                        <option value="xd_sky">Sky</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div class="row">
+                                <span class="settings-label">단계</span>
+                                <select id="terrainColorSteps" class="settings-select" style="flex:1;" title="색 구간 수. 엔진은 구간별 단색으로 칠하므로 적을수록 등고선처럼 끊어져 보임">
+                                    <option value="8">8</option>
+                                    <option value="16">16</option>
+                                    <option value="24">24</option>
+                                    <option value="32" selected>32 (기본)</option>
+                                    <option value="48">48</option>
+                                    <option value="64">64</option>
+                                    <option value="128">128 (연속에 가까움)</option>
                                 </select>
                             </div>
                             <div class="row">
@@ -1503,7 +1522,9 @@
                     // 고도 색상: 세로 그라디언트 바 + 최대/0/최소 눈금
                     const { min, max, rgb } = terrainColorState;
                     legendTitle.textContent = '고도 (m)';
-                    const grad = rgb.map((c, i) => `rgb(${c.join(',')}) ${(i / (rgb.length - 1) * 100).toFixed(1)}%`).join(', ');
+                    // 지형과 같은 띠로: i번째 색이 i/N ~ (i+1)/N 구간을 차지하는 hard stop 그라디언트
+                    const N = rgb.length;
+                    const grad = rgb.map((c, i) => `rgb(${c.join(',')}) ${(i / N * 100).toFixed(2)}% ${((i + 1) / N * 100).toFixed(2)}%`).join(', ');
                     const ticks = [[max, 0]];
                     if (min < 0 && max > 0) ticks.push([0, (max / (max - min)) * 100]);
                     ticks.push([min, 100]);
@@ -1545,7 +1566,21 @@
                     stops: [[0,[48,18,59]],[0.125,[65,110,227]],[0.25,[35,175,236]],[0.375,[42,213,168]],[0.5,[122,230,96]],[0.625,[205,220,40]],[0.75,[253,180,50]],[0.875,[236,101,26]],[1,[122,4,3]]] },
                 gray: { kind: 'norm', label: 'grayscale', stops: [[0,[0,0,0]],[1,[255,255,255]]] }
             };
-            const TERRAIN_COLOR_STEPS = 128;
+            // XDWorld 샘플(Terrain Altitude Color)의 32색 테마. 범위 균등(norm)으로 넣는다.
+            const XD_SAMPLE_THEMES = {
+                xd_standard: '8,0,255;0,22,255;0,53,255;0,83,255;0,114,255;0,144,255;0,175,255;0,205,255;0,236,255;0,255,244;0,255,214;0,255,183;0,255,153;0,255,122;0,255,92;0,255,61;0,255,31;0,255,0;30,255,0;60,255,0;91,255,0;121,255,0;152,255,0;182,255,0;213,255,0;243,255,0;255,237,0;255,206,0;255,176,0;255,145,0;255,115,0;255,84,0',
+                xd_warm: '255,102,0;255,118,0;255,126,0;255,129,0;255,127,0;255,143,0;255,157,0;255,168,0;255,181,0;255,189,0;255,198,0;255,204,0;255,210,0;255,220,0;255,233,0;255,246,0;254,252,0;246,249,7;232,242,17;218,232,27;203,223,36;174,202,57;155,187,70;145,180,77;123,162,92;104,147,104;78,126,123;63,114,133;43,97,148;39,94,150;29,87,157;20,79,164',
+                xd_sea: '7,64,61;6,74,66;6,85,72;4,101,79;2,123,89;0,143,98;0,156,104;0,174,112;0,180,115;0,193,123;0,205,128;0,216,135;0,225,140;0,234,145;0,239,148;0,247,156;0,251,159;0,254,163;3,254,170;7,254,177;20,255,194;22,255,198;31,253,208;38,247,217;43,243,222;49,239,228;52,236,232;56,232,236;67,223,247;67,223,248;68,222,248;73,218,255',
+                xd_plant: '0,193,190;0,184,166;0,178,149;0,168,120;0,162,106;0,156,94;0,152,85;0,148,80;1,144,75;3,139,70;7,134,68;16,124,68;28,112,75;36,104,81;44,98,87;55,88,96;64,82,102;73,74,110;85,65,119;99,54,127;116,43,131;125,37,129;128,34,127;137,29,119;145,26,112;149,25,106;156,22,95;165,19,78;169,18,71;170,17,70;179,15,50;186,13,37',
+                xd_sky: '73,218,255;68,222,248;67,223,248;67,223,247;56,232,236;52,236,232;49,239,228;43,243,222;38,247,217;31,253,208;22,255,198;20,255,194;7,254,177;3,254,170;0,254,163;0,251,159;0,247,156;0,239,148;0,234,145;0,225,140;0,216,135;0,205,128;0,193,123;0,180,115;0,174,112;0,156,104;0,143,98;2,123,89;4,101,79;6,85,72;6,74,66;7,64,61'
+            };
+            for (const [key, str] of Object.entries(XD_SAMPLE_THEMES)) {
+                const cols = str.split(';').map(t => t.split(',').map(Number));
+                TERRAIN_CMAPS[key] = { kind: 'norm', label: 'XDWorld ' + key.slice(3), stops: cols.map((c, i) => [i / (cols.length - 1), c]) };
+            }
+            // 색 구간 수. 엔진은 colorlist를 보간하지 않고 구간별 단색으로 칠한다(실측) → 적을수록 등고선 띠처럼 보임. UI '단계'로 조절.
+            const terrainColorSteps = document.getElementById('terrainColorSteps');
+            const getTerrainColorSteps = () => Math.max(2, parseInt(terrainColorSteps.value, 10) || 32);
             // stops: [[key, [r,g,b]], …] (key 오름차순). key 범위 밖은 양 끝 색으로 고정.
             const rampColor = (stops, k) => {
                 if (k <= stops[0][0]) return stops[0][1];
@@ -1564,9 +1599,10 @@
             }
             function buildTerrainColorRgb(theme, min, max) {
                 const cmap = TERRAIN_CMAPS[theme] || TERRAIN_CMAPS.etopo1;
-                const out = [];
-                for (let i = 0; i < TERRAIN_COLOR_STEPS; i++) {
-                    out.push(terrainColorAt(cmap, min + (max - min) * i / (TERRAIN_COLOR_STEPS - 1), min, max));
+                const N = getTerrainColorSteps(), out = [];
+                for (let i = 0; i < N; i++) {
+                    // 구간 중앙 고도의 색 (i번째 띠가 덮는 고도 범위의 가운데)
+                    out.push(terrainColorAt(cmap, min + (max - min) * (i + 0.5) / N, min, max));
                 }
                 return out;
             }
@@ -1594,7 +1630,7 @@
                 Module.XDRenderData();
                 showTerrainLegend(1);
             }
-            [terrainColorMin, terrainColorMax, terrainColorTheme].forEach(el => el.addEventListener('change', () => {
+            [terrainColorMin, terrainColorMax, terrainColorTheme, terrainColorSteps].forEach(el => el.addEventListener('change', () => {
                 if (document.querySelector('input[name="terrainRenderMode"]:checked').value === '1') applyTerrainColor();
             }));
             terrainColorOpacity.addEventListener('input', () => {
@@ -1616,10 +1652,12 @@
                 });
             });
 
-            // F12 콘솔용 헬퍼. 예) XDV.terrainColor(-6000, 4000) / XDV.terrainColor(0, 600, 'viridis', 0.8) / XDV.terrainNormal()
-            //   테마: etopo1 relief globe topo terrain viridis turbo gray
+            // F12 콘솔용 헬퍼. 예) XDV.terrainColor(-6000, 4000) / XDV.terrainColor(0, 600, 'viridis', 0.8, 16) / XDV.terrainNormal()
+            //   인자: (최소 m, 최대 m, 테마, 불투명도 0~1, 단계 8|16|24|32|48|64|128)
+            //   테마: etopo1 relief globe topo terrain viridis turbo gray xd_standard xd_warm xd_sea xd_plant xd_sky
             window.XDV = Object.assign(window.XDV || {}, {
-                terrainColor(min, max, theme = 'etopo1', opacity = 1) {
+                terrainColor(min, max, theme = 'etopo1', opacity = 1, steps = null) {
+                    if (steps && [...terrainColorSteps.options].some(o => o.value === String(steps))) terrainColorSteps.value = String(steps);
                     if (Number.isFinite(min)) terrainColorMin.value = min;
                     if (Number.isFinite(max)) terrainColorMax.value = max;
                     if (TERRAIN_CMAPS[theme]) terrainColorTheme.value = theme;
@@ -1628,7 +1666,7 @@
                     const radio = document.querySelector('input[name="terrainRenderMode"][value="1"]');
                     radio.checked = true;
                     radio.dispatchEvent(new Event('change', { bubbles: true }));
-                    return `terrain color ${terrainColorState.min}~${terrainColorState.max}m, ${terrainColorTheme.value}, opacity ${terrainColorOpacity.value}`;
+                    return `terrain color ${terrainColorState.min}~${terrainColorState.max}m, ${terrainColorTheme.value}, ${getTerrainColorSteps()} steps, opacity ${terrainColorOpacity.value}`;
                 },
                 terrainNormal() {
                     const radio = document.querySelector('input[name="terrainRenderMode"][value="0"]');
