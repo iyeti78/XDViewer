@@ -715,7 +715,9 @@ function createWindow() {
         height: 768, // 창 높이
         title: `XDViewer v${app.getVersion()}`, // 타이틀바에 버전 표시
         icon: path.join(__dirname, 'build', 'icon.ico'), // 창·작업표시줄 아이콘 (설치본 exe 아이콘은 electron-builder win.icon)
-        show: !process.env.XDV_HIDDEN, // 개발용: XDV_HIDDEN=1이면 창을 띄우지 않고(CDP 검증용) 백그라운드로만 실행
+        // 개발용: XDV_HIDDEN=1이면 화면 밖(-32000,-32000)에 두고 작업표시줄에서도 숨겨 사용자 눈에 안 띄게 한다(CDP 검증용).
+        // show:false로 숨기면 Chromium이 그리기를 멈춰 카메라 이동·렌더 검증이 안 된다(실측) → 화면 밖 배치.
+        ...(process.env.XDV_HIDDEN ? { x: -32000, y: -32000, skipTaskbar: true, focusable: false } : {}),
         autoHideMenuBar: true, // 메뉴바 자동 숨김
         webPreferences: {
             webgl: true,
@@ -883,7 +885,7 @@ ipcMain.handle('focus-window', async () => {
     if (mainWindow.isMinimized()) mainWindow.restore();
 
     mainWindow.setAlwaysOnTop(true);
-    if (!process.env.XDV_HIDDEN) mainWindow.show();
+    mainWindow.show();
     mainWindow.moveTop();
     mainWindow.blur();
     mainWindow.focus();

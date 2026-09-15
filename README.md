@@ -50,8 +50,8 @@
   - 항목 앞에 종류 아이콘 표시(영상·표고 영상·지형·3D Tiles·3D 모델·벡터·포인트·파이프·포인트클라우드). 체크박스로 표시/숨김, × 로 제거.
 - 분석 패널 · 지형 렌더링:
   - Normal / Slope / Aspect / **고도 색상**. 고도 색상은 최소·최대 고도(m, 수심은 음수)와 컬러맵, 불투명도를 정하면 지형(해저 포함)을 높이별 색으로 칠하고 범례를 표시.
-  - 컬러맵은 과학계 표준: 지형·수심용 ETOPO1(GMT/NOAA), GMT relief, GMT globe, cmocean topo(해면 0m 기준으로 바다/육지 분리), 범용 matplotlib terrain, viridis, turbo, grayscale, 그리고 XDWorld 샘플의 Terrain Altitude Color(Standard·Warm·Sea·Plant·Sky).
-  - 색 단계(8~128, 기본 32)를 줄이면 등고선처럼 띠가 뚜렷해지고, 늘리면 연속에 가까워짐. 범례도 같은 띠로 표시.
+  - 컬러맵: 기본 **자연색 지형(NASA 스타일)**, 지형·수심용 ETOPO1(GMT/NOAA), GMT relief, GMT globe, cmocean topo(해면 0m 기준으로 바다/육지 분리), 범용 matplotlib terrain, viridis, turbo, grayscale, 그리고 XDWorld 샘플의 Terrain Altitude Color(Standard·Warm·Sea·Plant·Sky).
+  - 색 단계는 최대 32(엔진 제한). 줄이면 등고선처럼 띠가 뚜렷해짐. 범례도 같은 띠로 표시. 범위를 실제 데이터에 맞게 좁힐수록 띠가 촘촘해짐.
   - **DEM 배율** 슬라이더(1~10×)로 드롭한 지형(DEM)의 높이를 과장해 해저 골짜기·산의 계곡을 강조. 타일 높이값 자체에 배율을 곱해 응답하므로 화면과 높이 조회가 일치. 기본 VWorld 지형에는 적용되지 않음(엔진의 demRate는 1 이하 평탄화 전용).
   - 지형 최대 레벨(layer.meta의 level.max, sdb는 실제 데이터)을 넘는 상세 타일은 만들어내지 않고 상위 레벨 지형을 그대로 보임.
   - F12 콘솔에서도 가능: `XDV.terrainColor(-6000, 4000)` · `XDV.terrainColor(0, 600, 'viridis', 0.8, 16)` · `XDV.terrainNormal()` · `XDV.demRate(4)`

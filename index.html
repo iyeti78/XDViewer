@@ -298,6 +298,7 @@
                                 <span class="settings-label">색상</span>
                                 <select id="terrainColorTheme" class="settings-select" style="flex:1;" title="지형·수심: 해면 0m 기준으로 바다/육지 색이 나뉨 · 범용: 범위 전체에 균등">
                                     <optgroup label="지형·수심 (해면 기준)">
+                                        <option value="natural" selected>자연색 지형 (NASA 스타일)</option>
                                         <option value="etopo1">ETOPO1 (GMT / NOAA)</option>
                                         <option value="relief">GMT relief</option>
                                         <option value="topo">cmocean topo</option>
@@ -320,14 +321,12 @@
                             </div>
                             <div class="row">
                                 <span class="settings-label">단계</span>
-                                <select id="terrainColorSteps" class="settings-select" style="flex:1;" title="색 구간 수. 엔진은 구간별 단색으로 칠하므로 적을수록 등고선처럼 끊어져 보임">
+                                <select id="terrainColorSteps" class="settings-select" style="flex:1;" title="색 구간 수(최대 32, 엔진 제한). 구간별 단색으로 칠하므로 적을수록 등고선처럼 끊어져 보임">
                                     <option value="8">8</option>
+                                    <option value="12">12</option>
                                     <option value="16">16</option>
                                     <option value="24">24</option>
-                                    <option value="32" selected>32 (기본)</option>
-                                    <option value="48">48</option>
-                                    <option value="64">64</option>
-                                    <option value="128">128 (연속에 가까움)</option>
+                                    <option value="32" selected>32 (최대)</option>
                                 </select>
                             </div>
                             <div class="row">
@@ -1546,12 +1545,17 @@
             }
 
             // ---- 고도 색상 (Module.getMap().setTerrainEffect(1) + Module.getTerrain().setTerrainColor) ----
-            // 엔진은 colorlist를 altitudemin~altitudemax에 균등 배치한다(길이 제한 없음, 512까지 실측). 음수 min(수심)도 정상 동작.
+            // 엔진은 colorlist를 altitudemin~altitudemax에 균등 배치하되 앞 32색만 쓴다(실측). 음수 min(수심)도 정상 동작.
             // 컬러맵은 과학계 표준을 쓴다.
             //   abs  : 고도(m) 절대값에 색이 붙은 지형·수심 맵(ETOPO1, GMT relief/globe). 범위를 바꿔도 같은 고도는 같은 색.
             //   split: 해면 0m에서 바다/육지 램프가 나뉘고 각 쪽을 범위에 맞춰 정규화(cmocean topo).
             //   norm : 범위 전체에 균등(matplotlib terrain, viridis, turbo, grayscale).
             const TERRAIN_CMAPS = {
+                // NASA Blue Marble/ETOPO 자연색 지형도 배색. 대륙붕(0~-200m)은 거의 흰 청록, 심해는 짙은 청회색,
+                // 육지는 저지대 짙은 녹색을 1,000m까지 넓게 유지하고 고지대에서 갈색→회백→흰색. 32색 제한이라 범위를 좁힐수록 부드럽다.
+                natural: { kind: 'abs', label: '자연색 지형',
+                    ocean: [[-9000,[34,52,72]],[-7000,[40,66,92]],[-5500,[48,84,118]],[-4500,[60,104,146]],[-3500,[76,128,176]],[-2500,[98,156,204]],[-1500,[128,186,226]],[-800,[160,210,238]],[-300,[196,232,246]],[-120,[220,244,248]],[-30,[236,250,250]],[0,[242,252,250]]],
+                    land:  [[0,[38,100,44]],[150,[42,110,48]],[400,[58,122,52]],[800,[92,134,58]],[1200,[128,140,64]],[1600,[152,132,72]],[2000,[168,122,82]],[2500,[178,142,112]],[3000,[192,170,150]],[3600,[208,198,188]],[4200,[226,222,218]],[5000,[244,244,244]],[6500,[255,255,255]]] },
                 etopo1: { kind: 'abs', label: 'ETOPO1',
                     ocean: [[-11000,[10,0,121]],[-10000,[38,0,152]],[-9000,[16,6,180]],[-8000,[0,14,203]],[-7000,[0,30,216]],[-6000,[12,68,231]],[-5000,[19,117,244]],[-4000,[21,158,252]],[-3000,[43,186,255]],[-2000,[65,200,255]],[-1000,[94,223,255]],[-500,[138,227,255]],[0,[188,230,255]]],
                     land:  [[0,[51,102,0]],[100,[51,204,102]],[200,[187,228,146]],[500,[255,220,185]],[1000,[243,202,137]],[1500,[230,184,88]],[2000,[217,166,39]],[2500,[168,154,31]],[3000,[164,144,25]],[4000,[159,123,13]],[5000,[153,102,0]],[5500,[162,89,89]],[6000,[178,118,118]],[7000,[194,176,176]],[8000,[229,229,229]]] },
@@ -1584,9 +1588,11 @@
                 const cols = str.split(';').map(t => t.split(',').map(Number));
                 TERRAIN_CMAPS[key] = { kind: 'norm', label: 'XDWorld ' + key.slice(3), stops: cols.map((c, i) => [i / (cols.length - 1), c]) };
             }
-            // 색 구간 수. 엔진은 colorlist를 보간하지 않고 구간별 단색으로 칠한다(실측) → 적을수록 등고선 띠처럼 보임. UI '단계'로 조절.
+            // 색 구간 수. 엔진은 colorlist를 보간하지 않고 구간별 단색으로 칠하고(실측), **앞 32색만 써서 범위에 펼친다**
+            // (33색 이상은 뒤가 버려져 앞쪽 색이 전체를 덮음 — 128색이면 육지까지 심해색). 따라서 최대 32. UI '단계'로 조절.
+            const TERRAIN_COLOR_MAX_STEPS = 32;
             const terrainColorSteps = document.getElementById('terrainColorSteps');
-            const getTerrainColorSteps = () => Math.max(2, parseInt(terrainColorSteps.value, 10) || 32);
+            const getTerrainColorSteps = () => Math.min(TERRAIN_COLOR_MAX_STEPS, Math.max(2, parseInt(terrainColorSteps.value, 10) || 32));
             // stops: [[key, [r,g,b]], …] (key 오름차순). key 범위 밖은 양 끝 색으로 고정.
             const rampColor = (stops, k) => {
                 if (k <= stops[0][0]) return stops[0][1];
@@ -1626,6 +1632,18 @@
                 if (!Number.isFinite(min) || !Number.isFinite(max)) return;
                 if (max < min) { [min, max] = [max, min]; terrainColorMin.value = min; terrainColorMax.value = max; }
                 if (max === min) max = min + 1;
+                // 해면(0m)이 띠 경계에 오도록 max를 살짝 조정한다. 엔진은 N색을 min~max에 균등 배치하므로 0이 띠 한가운데에
+                // 걸리면 바다(0m)가 육지 첫 띠 색으로 칠해진다(실측: -8000~6000·32단계에서 바다가 녹색). abs/split 맵에만 적용.
+                const cmapKind = (TERRAIN_CMAPS[terrainColorTheme.value] || TERRAIN_CMAPS.natural).kind;
+                // 경계는 정확히 0이 아니라 +2m에 둔다: 기본 VWorld 지형의 바다는 0m 근처에서 ±수십 cm로 흔들려(실측: 녹색 바다에 흰 점 얼룩)
+                // 0에 두면 반은 육지색이 된다. 2m 아래 육지는 무시할 만하다.
+                const SEA_EDGE = 2;
+                if (cmapKind !== 'norm' && min < SEA_EDGE && max > SEA_EDGE) {
+                    const N = getTerrainColorSteps();
+                    const k = Math.max(1, Math.min(N - 1, Math.round((SEA_EDGE - min) / (max - min) * N))); // 해면 아래 띠 수
+                    const snapped = Math.round(min + (SEA_EDGE - min) * N / k);
+                    if (snapped !== max) { max = snapped; terrainColorMax.value = max; }
+                }
                 const alpha = Math.round(parseFloat(terrainColorOpacity.value) * 255);
                 const rgb = buildTerrainColorRgb(terrainColorTheme.value, min, max);
                 Object.assign(terrainColorState, { min, max, rgb });
@@ -1686,11 +1704,15 @@
             });
 
             // F12 콘솔용 헬퍼. 예) XDV.terrainColor(-6000, 4000) / XDV.terrainColor(0, 600, 'viridis', 0.8, 16) / XDV.terrainNormal() / XDV.demRate(4)
-            //   인자: (최소 m, 최대 m, 테마, 불투명도 0~1, 단계 8|16|24|32|48|64|128)
-            //   테마: etopo1 relief globe topo terrain viridis turbo gray xd_standard xd_warm xd_sea xd_plant xd_sky
+            //   인자: (최소 m, 최대 m, 테마, 불투명도 0~1, 단계 2~32 — 엔진이 앞 32색만 씀)
+            //   테마: natural etopo1 relief globe topo terrain viridis turbo gray xd_standard xd_warm xd_sea xd_plant xd_sky
             window.XDV = Object.assign(window.XDV || {}, {
-                terrainColor(min, max, theme = 'etopo1', opacity = 1, steps = null) {
-                    if (steps && [...terrainColorSteps.options].some(o => o.value === String(steps))) terrainColorSteps.value = String(steps);
+                terrainColor(min, max, theme = 'natural', opacity = 1, steps = null) {
+                    if (steps) {
+                        const v = String(Math.min(TERRAIN_COLOR_MAX_STEPS, Math.max(2, parseInt(steps, 10) || 32)));
+                        if (![...terrainColorSteps.options].some(o => o.value === v)) { const o = document.createElement('option'); o.value = v; o.textContent = v; terrainColorSteps.appendChild(o); }
+                        terrainColorSteps.value = v;
+                    }
                     if (Number.isFinite(min)) terrainColorMin.value = min;
                     if (Number.isFinite(max)) terrainColorMax.value = max;
                     if (TERRAIN_CMAPS[theme]) terrainColorTheme.value = theme;
