@@ -135,6 +135,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 영상 소스 등록 -> 엔진에 넘길 로컬 HTTP layerPath (타일은 요청 시 생성)
   registerImageSource: (opts) => ipcRenderer.invoke('register-image-source', opts),
   unregisterImageSource: (id) => ipcRenderer.invoke('unregister-image-source', id),
+  setDemScale: (id, scale) => ipcRenderer.invoke('set-dem-scale', id, scale),
   // URL 텍스트 받기 (렌더러 fetch는 file:// 출처라 CORS에 막힐 수 있어 메인에서 받는다)
   fetchText: (url) => ipcRenderer.invoke('fetch-text', url)
 

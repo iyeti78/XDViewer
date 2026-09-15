@@ -336,9 +336,9 @@
                                 <span id="terrainColorOpacityText" class="unit" style="min-width:22px;text-align:right;">1.0</span>
                             </div>
                         </div>
-                        <!-- 고도 배율(수직 과장): Module.getTerrain().demRate. 렌더링 모드와 무관하게 항상 적용 -->
-                        <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="지형 높이를 몇 배로 과장할지. 해저 골짜기나 산의 계곡이 잘 보이게">
-                            <span class="settings-label" style="margin:0; min-width:48px;">고도 배율</span>
+                        <!-- DEM 배율(수직 과장): 드롭한 DEM 타일의 높이값에 서버가 배율을 곱해 응답. 기본 VWorld 지형은 엔진 제약으로 불가 -->
+                        <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="드롭한 지형(DEM)의 높이를 몇 배로 과장할지. 해저 골짜기나 산의 계곡이 잘 보이게. 기본 지형에는 적용되지 않음">
+                            <span class="settings-label" style="margin:0; min-width:48px;">DEM 배율</span>
                             <input type="range" id="demRateSlider" min="1" max="10" step="0.5" value="1" style="flex:1;">
                             <span id="demRateText" style="color:#cccccc; font-size:11px; min-width:34px; text-align:right;">1.0×</span>
                         </div>
@@ -1658,19 +1658,32 @@
                 });
             });
 
-            // ---- 고도 배율 (Module.getTerrain().demRate: 셰이더 u_demRate, 지형 높이 수직 과장) ----
-            // 실측: 3을 넣으면 getTerrHeight도 3배로 나온다(754m → 2,262m). 기본 지형과 demBox(드롭한 DEM) 모두 적용.
+            // ---- DEM 배율 (드롭한 지형의 수직 과장) ----
+            // 엔진의 Module.getTerrain().demRate는 쓰지 않는다: 셰이더가 |r|<1(평탄화)에서만 반응하고 1보다 크면
+            // CPU 높이 조회만 커져 지형에 구멍이 난다(실측). 대신 메인의 /__xddem__/ 서버가 타일 높이값에 배율을 곱해
+            // 응답하고(set-dem-scale), XDEPlanetRefresh로 타일을 다시 받게 한다. 기본 VWorld 지형에는 적용 불가.
             const demRateSlider = document.getElementById('demRateSlider');
             const demRateText = document.getElementById('demRateText');
-            function applyDemRate(rate) {
-                rate = Math.max(0.1, Math.min(50, Number(rate) || 1));
-                Module.getTerrain().demRate = rate;
-                Module.XDRenderData();
-                demRateText.textContent = rate.toFixed(1) + '×';
-                if (Number(demRateSlider.value) !== rate) demRateSlider.value = Math.min(Number(demRateSlider.max), rate);
-                return rate;
+            // currentDemScale / activeDemSource 는 스크립트 최상위(loadTileDbLayer 근처)에 선언 — loadMetaLayer도 쓴다
+            let demScaleTimer = null;
+            async function applyDemScale(scale) {
+                scale = Math.max(0.1, Math.min(50, Number(scale) || 1));
+                currentDemScale = scale;
+                demRateText.textContent = scale.toFixed(1) + '×';
+                if (Number(demRateSlider.value) !== scale) demRateSlider.value = Math.min(Number(demRateSlider.max), scale);
+                if (activeDemSource) {
+                    await window.electronAPI.setDemScale(activeDemSource.id, scale);
+                    Module.XDEPlanetRefresh();   // 지형 타일 재요청
+                    Module.XDRenderData();
+                }
+                return scale;
             }
-            demRateSlider.addEventListener('input', () => applyDemRate(demRateSlider.value));
+            demRateSlider.addEventListener('input', () => {
+                // 드래그 중엔 표시만, 멈추면 적용 (타일 재요청이 비싸다)
+                demRateText.textContent = Number(demRateSlider.value).toFixed(1) + '×';
+                clearTimeout(demScaleTimer);
+                demScaleTimer = setTimeout(() => applyDemScale(demRateSlider.value), 250);
+            });
 
             // F12 콘솔용 헬퍼. 예) XDV.terrainColor(-6000, 4000) / XDV.terrainColor(0, 600, 'viridis', 0.8, 16) / XDV.terrainNormal() / XDV.demRate(4)
             //   인자: (최소 m, 최대 m, 테마, 불투명도 0~1, 단계 8|16|24|32|48|64|128)
@@ -1694,9 +1707,10 @@
                     radio.dispatchEvent(new Event('change', { bubbles: true }));
                     return 'terrain normal';
                 },
-                // 지형 높이 배율. 슬라이더는 1~10, 콘솔에서는 0.1~50까지
-                demRate(rate = 1) {
-                    return 'demRate ' + applyDemRate(rate) + '×';
+                // 드롭한 DEM의 높이 배율. 슬라이더는 1~10, 콘솔에서는 0.1~50까지. DEM이 없으면 값만 기억해 두었다가 로드 시 적용
+                async demRate(rate = 1) {
+                    const v = await applyDemScale(rate);
+                    return `DEM scale ${v}×` + (activeDemSource ? ` (${activeDemSource.name})` : ' (적용할 DEM 없음: 지형 sdb나 DEM 폴더를 먼저 올리세요)');
                 }
             });
 
@@ -3329,6 +3343,10 @@
             loadMetaLayer(metaPath, { pathOverride: src.url });
         }
 
+        // ============ DEM 배율 상태 (분석 패널 슬라이더 ↔ loadMetaLayer 공유) ============
+        let currentDemScale = 1;      // 드롭한 DEM 높이 배율. 서버(set-dem-scale)가 타일 값에 곱한다
+        let activeDemSource = null;   // { id, name } — 현재 demBox로 올라간 DEM 소스(로컬 서버 라우트)
+
         // ============ 레이어 목록 종류 아이콘 ============
         // 레이어 항목(체크박스 뒤)에 붙는 16px 선 아이콘. layer.meta type -> 종류 매핑은 LAYER_TYPE_ICON.
         const LAYER_ICONS = {
@@ -3386,6 +3404,7 @@
             loadMetaLayer(filePath, {
                 pathOverride: src.url,
                 keepCamera: keepCamera,
+                demSourceId: isTerrain ? src.id : undefined,
                 meta: {
                     name: name,
                     path: src.url,
@@ -5344,6 +5363,7 @@
         // opts.meta        : layer.meta 파일 대신 쓸 메타 객체
         // opts.pathOverride: 엔진에 넘길 layerPath (로컬 HTTP URL 등)
         // opts.keepCamera  : true면 레이어 중심으로 카메라를 옮기지 않음 (전구 범위 DEM 등)
+        // opts.demSourceId : 지형(sdb) 소스 id — DEM 배율(set-dem-scale) 대상
         function loadMetaLayer(filePath, opts = {}) {
             const source = opts.meta
                 ? Promise.resolve(JSON.stringify(opts.meta))
@@ -5417,6 +5437,22 @@
                         }else if (layerType == "ETLT_REAL3D") {
                             type = Module.TILE_LAYER_TYPE_REAL3D;
                         }else if (layerType == "ETLT_BASE_DEM") {
+                            // DEM은 항상 로컬 서버(/__xddem__/)를 거치게 한다: 배율(수직 과장)·빠진 타일 합성이 거기서 된다
+                            if (opts.demSourceId) {
+                                activeDemSource = { id: opts.demSourceId, name: layerName };
+                            } else if (!/^https?:\/\//i.test(layerPath)) {
+                                const demSrc = await window.electronAPI.registerImageSource({ kind: 'demdir', srcDir: layerPath, maxLevel: maxLv });
+                                if (demSrc.error) {
+                                    alert(`DEM 폴더를 열 수 없습니다.\n\n${layerPath}\n\n${demSrc.error}`);
+                                    return;
+                                }
+                                activeDemSource = { id: demSrc.id, name: layerName };
+                                layerPath = demSrc.url;
+                            } else {
+                                activeDemSource = null; // 원격 DEM은 배율 불가
+                            }
+                            if (activeDemSource && currentDemScale !== 1) await window.electronAPI.setDemScale(activeDemSource.id, currentDemScale);
+
                             var terrain = Module.getTerrain();
                             terrain.SetUseDemBox(true);
                             terrain.setDemBox({
@@ -5461,6 +5497,7 @@
                             removeBtn.addEventListener('click', () => {
                                 terrain.SetUseDemBox(false);
                                 Module.XDEPlanetRefresh();
+                                activeDemSource = null;
                                 layerItem.remove();
                             });
 

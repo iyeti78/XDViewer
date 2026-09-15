@@ -494,6 +494,51 @@ async function renderCoverageTile(src, L, idx, idy) {
 // (상세 타일이 생략된 곳은 바다이므로 해면 아래 육지(사해 등)가 잘릴 일은 없다)
 const DEM_N = 65;
 
+/**
+ * 폴더(XDWorld 배치) DEM을 sdb와 같은 인터페이스로: {L}/{IDY}/{IDY}_{IDX}.bil 파일을 읽어 준다.
+ * terra-gen 폴더는 번호 패딩이 일정하지 않다(실측: 1만 미만은 4자리 `0007_0017.bil`, 이상은 8자리, 한 파일 안에서도
+ * `7192_00017487.bil`처럼 섞임) → idy/idx 각각 8자리·4자리·무패딩 후보를 조합해 있는 파일을 찾는다. 맞은 조합을 기억해 다음엔 먼저 시도.
+ */
+function openDemDir(dir) {
+    const pads = [(n) => String(n).padStart(8, '0'), (n) => String(n).padStart(4, '0'), (n) => String(n)];
+    let lastHit = null; // [yi, xi]
+    const candidates = () => {
+        const list = [];
+        if (lastHit) list.push(lastHit);
+        for (let yi = 0; yi < pads.length; yi++) for (let xi = 0; xi < pads.length; xi++) if (!lastHit || lastHit[0] !== yi || lastHit[1] !== xi) list.push([yi, xi]);
+        return list;
+    };
+    return {
+        getTile: (L, idx, idy) => {
+            for (const [yi, xi] of candidates()) {
+                const y = pads[yi](idy), x = pads[xi](idx);
+                const f = path.join(dir, String(L), y, `${y}_${x}.bil`);
+                if (fs.existsSync(f)) {
+                    lastHit = [yi, xi];
+                    try { return fs.readFileSync(f); } catch (_) { return null; }
+                }
+            }
+            return null;
+        },
+        close: () => {},
+        info: { kind: 'terrain', schema: 'dir', format: 'bil' }
+    };
+}
+
+/**
+ * 지형 타일 높이에 배율을 곱한다(수직 과장). 엔진의 demRate는 |r|<1(평탄화)에서만 셰이더가 반응하고
+ * 1보다 크면 CPU 높이만 커져 구멍이 생기므로(실측), 과장은 데이터 자체를 바꿔 CPU/GPU를 일치시킨다.
+ * gzip(65x65 float32) → 배율 → gzip. nodata(≤ -30000)는 그대로.
+ */
+function scaleDemTile(blob, scale) {
+    let u;
+    try { u = zlib.gunzipSync(blob); } catch (_) { return blob; }
+    if (u.length % 4 !== 0) return blob;
+    const f = new Float32Array(u.buffer, u.byteOffset, u.length / 4);
+    for (let i = 0; i < f.length; i++) if (f[i] > -30000) f[i] *= scale;
+    return zlib.gzipSync(Buffer.from(f.buffer, f.byteOffset, f.byteLength));
+}
+
 function synthesizeDemTile(src, L, idx, idy, maxUp = 6) {
     for (let k = 1; k <= maxUp && L - k >= 0; k++) {
         const f = 2 ** k;
@@ -592,6 +637,13 @@ function ensureLocalFileServer() {
                     return res.end(m ? 'Unknown terrain source' : 'Bad terrain tile path');
                 }
                 const L = Number(m[2]), idy = Number(m[3]), idx = Number(m[4]);
+                // 데이터의 최대 레벨을 넘는 요청은 상위 타일로 만들어내지 않는다(없는 상세를 지어내지 않음). 엔진이 상위 레벨로 대체.
+                const maxL = src.db.info.maxL;
+                if (Number.isFinite(maxL) && L > maxL) {
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] 404 xddem ${m[1]}/${L}/${idy}/${idx} (> maxL ${maxL})`);
+                    res.writeHead(404);
+                    return res.end('Beyond max level');
+                }
                 let blob = src.db.getTile(L, idx, idy);
                 let synthesized = false;
                 if (!blob) {
@@ -606,7 +658,8 @@ function ensureLocalFileServer() {
                     }
                     synthesized = !!blob;
                 }
-                if (process.env.XDREQ_DEBUG) console.log(`[srv] ${blob ? (synthesized ? '200*' : '200') : '404'} xddem ${m[1]}/${L}/${idy}/${idx}`);
+                if (blob && src.demScale && src.demScale !== 1) blob = scaleDemTile(blob, src.demScale);
+                if (process.env.XDREQ_DEBUG) console.log(`[srv] ${blob ? (synthesized ? '200*' : '200') : '404'} xddem ${m[1]}/${L}/${idy}/${idx}${src.demScale && src.demScale !== 1 ? ` x${src.demScale}` : ''}`);
                 if (!blob) {
                     res.writeHead(404);
                     return res.end('No data');
@@ -662,6 +715,7 @@ function createWindow() {
         height: 768, // 창 높이
         title: `XDViewer v${app.getVersion()}`, // 타이틀바에 버전 표시
         icon: path.join(__dirname, 'build', 'icon.ico'), // 창·작업표시줄 아이콘 (설치본 exe 아이콘은 electron-builder win.icon)
+        show: !process.env.XDV_HIDDEN, // 개발용: XDV_HIDDEN=1이면 창을 띄우지 않고(CDP 검증용) 백그라운드로만 실행
         autoHideMenuBar: true, // 메뉴바 자동 숨김
         webPreferences: {
             webgl: true,
@@ -829,7 +883,7 @@ ipcMain.handle('focus-window', async () => {
     if (mainWindow.isMinimized()) mainWindow.restore();
 
     mainWindow.setAlwaysOnTop(true);
-    mainWindow.show();
+    if (!process.env.XDV_HIDDEN) mainWindow.show();
     mainWindow.moveTop();
     mainWindow.blur();
     mainWindow.focus();
@@ -873,6 +927,12 @@ ipcMain.handle('register-image-source', async (event, opts) => {
     let info = null;
     if (opts.kind === 'cesium') {
         src.getSrc = makeTileCache(src.srcDir, src.scheme, src.ext);
+    } else if (opts.kind === 'demdir') {
+        // 폴더 DEM도 서버를 거치게 해 배율(수직 과장)·합성이 되도록
+        if (!opts.srcDir || !fs.existsSync(opts.srcDir)) return { error: '폴더를 찾을 수 없습니다: ' + opts.srcDir };
+        src.db = openDemDir(src.srcDir);
+        if (Number.isFinite(Number(opts.maxLevel))) src.db.info.maxL = Number(opts.maxLevel); // layer.meta level.max
+        info = src.db.info;
     } else if (opts.kind === 'sqlite') {
         // 열기 실패(지형/미지원 격자/스키마)는 예외 대신 error 문자열로 돌려 렌더러가 안내한다
         try {
@@ -889,6 +949,14 @@ ipcMain.handle('register-image-source', async (event, opts) => {
     const url = `http://127.0.0.1:${localFileServerPort}/${route}/${id}`;
     if (process.env.XDREQ_DEBUG) console.log(`[register-image-source] id=${id} kind=${opts.kind} -> ${url}`);
     return { id, url, levels: opts.kind === 'cesium' ? xdLevelsForSource(opts.srcMaxLv) : null, info };
+});
+
+// 지형 소스의 높이 배율. 캐시(합성 타일 포함)는 원본 기준이라 응답 시점에 곱하므로 비우기만 한다
+ipcMain.handle('set-dem-scale', (event, id, scale) => {
+    const src = imageSources.get(id);
+    if (!src || !src.db || src.db.info.kind !== 'terrain') return false;
+    src.demScale = Number(scale) || 1;
+    return true;
 });
 
 ipcMain.handle('unregister-image-source', (event, id) => {
