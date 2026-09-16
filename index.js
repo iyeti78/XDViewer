@@ -245,6 +245,7 @@ function transcodeJpgBuffer(buf) {
 
 /** 요청된 XDWorld 타일(L, idx, idy) 하나를 png 버퍼로 만든다. 데이터 없으면 null. 커버리지는 Promise 반환 */
 function produceXdTile(src, L, idx, idy) {
+    if (src.kind === 'demcolor') return renderDemColorTile(src, L, idx, idy);   // DEM → 연속 그라데이션(+힐셰이드) png
     if (src.kind === 'sqlite') {
         if (src.db.info.kind === 'coverage') return renderCoverageTile(src, L, idx, idy);   // Promise<png|null>
         // gpkg/sdb: XDWorld 격자 그대로라 재투영 없음. png는 그대로, jpg는 png로 변환
@@ -543,6 +544,7 @@ function scaleDemTile(blob, scale) {
 // 엔진은 면 단위로 음영을 넣어 메시가 성기면 삼각형이 그대로 보이므로, ArcGIS처럼 원 해상도 위에서는 3차 보간으로 메시를 촘촘히 한다.
 // 그 위는 404 → 엔진이 마지막 레벨을 유지. 개발용 env XDV_DEM_UPSAMPLE로 바꿀 수 있다(0이면 끔).
 const DEM_UPSAMPLE_LEVELS = process.env.XDV_DEM_UPSAMPLE !== undefined ? Math.max(0, parseInt(process.env.XDV_DEM_UPSAMPLE, 10) || 0) : 3;
+let demUpsampleLevels = DEM_UPSAMPLE_LEVELS;   // 분석 패널 체크박스(set-dem-upsample)로 런타임 변경
 
 function decodeDemGrid(blob) {
     try {
@@ -618,6 +620,82 @@ function synthesizeDemTile(src, L, idx, idy, maxUp = 6, clampNegative = true) {
     return null;
 }
 
+// ============ DEM 고도 색상 영상 (연속 그라데이션 + 힐셰이드) ============
+//
+// 엔진의 지형 색상은 셰이더가 u_demColorList[32]에서 구간 색 하나를 고르는 구조라(보간 없음, 32색 상한) 부드럽게 못 만든다.
+// 대신 DEM 타일에서 256px 컬러 PNG를 만들어 영상 레이어로 덮는다. 램프는 렌더러가 256색으로 샘플해 넘기고 여기서 선형 보간.
+// 힐셰이드는 격자 기울기로 계산(북서광 315°/고도각 45°), 배율(hillshade)로 강도 조절. 0이면 끔.
+
+/** 색상 영상용 높이 격자: 실제 타일 → 없으면 상위에서 3차 보간(수심 유지). 영상은 어떤 레벨이든 만들어 준다(최대 8레벨 위까지). */
+function demGridForColor(dem, L, idx, idy) {
+    let blob = dem.db.getTile(L, idx, idy);
+    if (!blob) blob = synthesizeDemTile(dem, L, idx, idy, 8, false);
+    return blob ? decodeDemGrid(blob) : null;
+}
+
+function renderDemColorTile(src, L, idx, idy) {
+    const dem = imageSources.get(src.demSourceId);
+    if (!dem || !dem.db) return null;
+    const g = demGridForColor(dem, L, idx, idy);
+    if (!g) return null;
+
+    const { min, max, colors, alpha } = src.ramp;
+    const range = (max - min) || 1;
+    const nC = colors.length;
+    const M = DEM_N - 1;
+    // 격자 셀 크기(m): 타일 폭 36°/2^L, 65샘플. 위도 보정
+    const tileDeg = 36 / 2 ** L;
+    const latC = ((idy + 0.5) / (5 * 2 ** L)) * 180 - 90;
+    const cellY = tileDeg / M * 111320;
+    const cellX = cellY * Math.max(0.05, Math.cos(latC * Math.PI / 180));
+    const shade = src.hillshade > 0;
+    const zf = src.hillshade || 0;
+    // 광원: 방위 315°(북서), 고도 45°
+    const az = 315 * Math.PI / 180, el = 45 * Math.PI / 180;
+    const lx = Math.sin(az) * Math.cos(el), ly = Math.cos(az) * Math.cos(el), lz = Math.sin(el);
+
+    const at = (c, r) => g[Math.min(M, Math.max(0, r)) * DEM_N + Math.min(M, Math.max(0, c))];
+    const rgba = Buffer.alloc(256 * 256 * 4);
+    let any = false;
+    for (let py = 0; py < 256; py++) {
+        const fy = (py + 0.5) / 256 * M - 0.5;
+        const y0 = Math.max(0, Math.min(M - 1, Math.floor(fy))), ty = Math.min(1, Math.max(0, fy - y0));
+        for (let px = 0; px < 256; px++) {
+            const fx = (px + 0.5) / 256 * M - 0.5;
+            const x0 = Math.max(0, Math.min(M - 1, Math.floor(fx))), tx = Math.min(1, Math.max(0, fx - x0));
+            const a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), d = at(x0 + 1, y0 + 1);
+            if (a <= -30000 || b <= -30000 || c <= -30000 || d <= -30000) continue; // nodata → 투명
+            const h = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+
+            // 램프 선형 보간
+            const t = Math.min(1, Math.max(0, (h - min) / range)) * (nC - 1);
+            const i0 = Math.floor(t), i1 = Math.min(nC - 1, i0 + 1), u = t - i0;
+            let r = colors[i0][0] + (colors[i1][0] - colors[i0][0]) * u;
+            let gg = colors[i0][1] + (colors[i1][1] - colors[i0][1]) * u;
+            let bb = colors[i0][2] + (colors[i1][2] - colors[i0][2]) * u;
+
+            if (shade) {
+                // 중앙차분 기울기 (격자 단위 → m)
+                const xi = Math.round(fx), yi = Math.round(fy);
+                const dzdx = (at(xi + 1, yi) - at(xi - 1, yi)) * zf / (2 * cellX);
+                const dzdy = (at(xi, yi - 1) - at(xi, yi + 1)) * zf / (2 * cellY);   // 행 0이 북쪽 → 북쪽이 +y
+                const nl = Math.hypot(dzdx, dzdy, 1);
+                const nx = -dzdx / nl, ny = -dzdy / nl, nz = 1 / nl;
+                const s = Math.max(0, nx * lx + ny * ly + nz * lz);
+                const k = 0.45 + 0.75 * s;   // 0.45(그늘) ~ 1.2(밝은 면)
+                r *= k; gg *= k; bb *= k;
+            }
+            const o = (py * 256 + px) * 4;
+            rgba[o] = Math.max(0, Math.min(255, Math.round(r)));
+            rgba[o + 1] = Math.max(0, Math.min(255, Math.round(gg)));
+            rgba[o + 2] = Math.max(0, Math.min(255, Math.round(bb)));
+            rgba[o + 3] = alpha;
+            any = true;
+        }
+    }
+    return any ? encodePng(256, 256, 6, rgba) : null;
+}
+
 function ensureLocalFileServer() {
     if (localFileServer) return Promise.resolve(localFileServerPort);
 
@@ -679,8 +757,8 @@ function ensureLocalFileServer() {
                 // 그 위는 404 → 엔진이 마지막 레벨을 유지. 최대 레벨 안의 빠진 타일은 음수를 0으로 눌러 메운다(cop30 바다).
                 const maxL = src.db.info.maxL;
                 const beyond = Number.isFinite(maxL) && L > maxL;
-                if (beyond && L > maxL + DEM_UPSAMPLE_LEVELS) {
-                    if (process.env.XDREQ_DEBUG) console.log(`[srv] 404 xddem ${m[1]}/${L}/${idy}/${idx} (> maxL ${maxL}+${DEM_UPSAMPLE_LEVELS})`);
+                if (beyond && L > maxL + demUpsampleLevels) {
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] 404 xddem ${m[1]}/${L}/${idy}/${idx} (> maxL ${maxL}+${demUpsampleLevels})`);
                     res.writeHead(404);
                     return res.end('Beyond max level');
                 }
@@ -974,7 +1052,16 @@ ipcMain.handle('register-image-source', async (event, opts) => {
         if (!opts.srcDir || !fs.existsSync(opts.srcDir)) return { error: '폴더를 찾을 수 없습니다: ' + opts.srcDir };
         src.db = openDemDir(src.srcDir);
         if (Number.isFinite(Number(opts.maxLevel))) src.db.info.maxL = Number(opts.maxLevel); // layer.meta level.max
+        if (Array.isArray(opts.bounds) && opts.bounds.length === 4) src.db.info.bounds = opts.bounds.map(Number);
         info = src.db.info;
+    } else if (opts.kind === 'demcolor') {
+        // DEM 소스에서 색상 영상 타일을 만드는 영상 소스
+        const dem = imageSources.get(Number(opts.demSourceId));
+        if (!dem || !dem.db || dem.db.info.kind !== 'terrain') return { error: 'DEM 소스를 찾을 수 없습니다: ' + opts.demSourceId };
+        src.demSourceId = Number(opts.demSourceId);
+        src.ramp = opts.ramp;                 // { min, max, colors: [[r,g,b]…], alpha }
+        src.hillshade = Number(opts.hillshade) || 0;
+        info = { kind: 'imagery', bounds: opts.bounds || dem.db.info.bounds, minL: opts.minL, maxL: opts.maxL };
     } else if (opts.kind === 'sqlite') {
         // 열기 실패(지형/미지원 격자/스키마)는 예외 대신 error 문자열로 돌려 렌더러가 안내한다
         try {
@@ -991,6 +1078,23 @@ ipcMain.handle('register-image-source', async (event, opts) => {
     const url = `http://127.0.0.1:${localFileServerPort}/${route}/${id}`;
     if (process.env.XDREQ_DEBUG) console.log(`[register-image-source] id=${id} kind=${opts.kind} -> ${url}`);
     return { id, url, levels: opts.kind === 'cesium' ? xdLevelsForSource(opts.srcMaxLv) : null, info };
+});
+
+// 지형 메시 업샘플 레벨 수 (0 = 끔). 지형 소스 캐시를 비우고, 렌더러가 XDEPlanetRefresh로 다시 받는다
+ipcMain.handle('set-dem-upsample', (event, levels) => {
+    demUpsampleLevels = Math.max(0, Math.min(6, parseInt(levels, 10) || 0));
+    for (const src of imageSources.values()) if (src.db && src.db.info.kind === 'terrain') src.cache.clear();
+    return demUpsampleLevels;
+});
+
+// 색상 영상 소스의 램프/힐셰이드 갱신 (타일은 렌더러가 레이어를 다시 만들어 다시 받는다)
+ipcMain.handle('update-dem-color', (event, id, opts) => {
+    const src = imageSources.get(id);
+    if (!src || src.kind !== 'demcolor') return false;
+    if (opts.ramp) src.ramp = opts.ramp;
+    if (opts.hillshade !== undefined) src.hillshade = Number(opts.hillshade) || 0;
+    src.cache.clear();
+    return true;
 });
 
 // 지형 소스의 높이 배율. 캐시(합성 타일 포함)는 원본 기준이라 응답 시점에 곱하므로 비우기만 한다

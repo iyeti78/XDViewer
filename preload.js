@@ -136,6 +136,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   registerImageSource: (opts) => ipcRenderer.invoke('register-image-source', opts),
   unregisterImageSource: (id) => ipcRenderer.invoke('unregister-image-source', id),
   setDemScale: (id, scale) => ipcRenderer.invoke('set-dem-scale', id, scale),
+  updateDemColor: (id, opts) => ipcRenderer.invoke('update-dem-color', id, opts),
+  setDemUpsample: (levels) => ipcRenderer.invoke('set-dem-upsample', levels),
   // URL 텍스트 받기 (렌더러 fetch는 file:// 출처라 CORS에 막힐 수 있어 메인에서 받는다)
   fetchText: (url) => ipcRenderer.invoke('fetch-text', url)
 

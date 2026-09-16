@@ -329,6 +329,19 @@
                                     <option value="32" selected>32 (최대)</option>
                                 </select>
                             </div>
+                            <div class="row" title="엔진 지형 색상은 32색 구간 단색이라 띠가 생김. 켜면 DEM에서 연속 그라데이션+힐셰이드 영상 타일을 만들어 지형 위에 덮는다 (드롭한 DEM에만)">
+                                <label class="settings-checkbox-label" style="gap:6px;">
+                                    <input type="checkbox" id="terrainColorSmooth">
+                                    <span>부드러운 색 (DEM 영상으로 덮기)</span>
+                                </label>
+                                <select id="terrainColorShade" class="settings-select" style="width:auto;" title="힐셰이드 강도(높이 배율)">
+                                    <option value="0">음영 없음</option>
+                                    <option value="1">음영 1×</option>
+                                    <option value="3" selected>음영 3×</option>
+                                    <option value="6">음영 6×</option>
+                                    <option value="10">음영 10×</option>
+                                </select>
+                            </div>
                             <div class="row">
                                 <span class="settings-label">불투명</span>
                                 <input type="range" id="terrainColorOpacity" min="0" max="1" step="0.1" value="1" style="flex:1;">
@@ -336,6 +349,11 @@
                             </div>
                         </div>
                         <!-- DEM 배율(수직 과장): 드롭한 DEM 타일의 높이값에 서버가 배율을 곱해 응답. 기본 VWorld 지형은 엔진 제약으로 불가 -->
+                        <!-- DEM 메시 업샘플(3차 보간): 최대 레벨 위 3레벨을 부드럽게. 전/후 비교용 체크박스 -->
+                        <label class="settings-checkbox-label" style="margin-top:10px; gap:6px;" title="DEM 최대 레벨 위 3레벨을 3차 보간으로 촘촘히 만들어 삼각형 면이 안 보이게. 끄면 원 해상도 격자 그대로(비교용)">
+                            <input type="checkbox" id="demSmoothToggle" checked>
+                            <span>DEM 메시 부드럽게 (3차 보간 업샘플)</span>
+                        </label>
                         <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="드롭한 지형(DEM)의 높이를 몇 배로 과장할지. 해저 골짜기나 산의 계곡이 잘 보이게. 기본 지형에는 적용되지 않음">
                             <span class="settings-label" style="margin:0; min-width:48px;">DEM 배율</span>
                             <input type="range" id="demRateSlider" min="1" max="10" step="0.5" value="1" style="flex:1;">
@@ -1557,9 +1575,12 @@
                     // 고도 색상: 세로 그라디언트 바 + 최대/0/최소 눈금
                     const { min, max, rgb } = terrainColorState;
                     legendTitle.textContent = '고도 (m)';
-                    // 지형과 같은 띠로: i번째 색이 i/N ~ (i+1)/N 구간을 차지하는 hard stop 그라디언트
+                    // 지형과 같은 띠로: i번째 색이 i/N ~ (i+1)/N 구간을 차지하는 hard stop 그라디언트. 부드러운 색(영상)이면 연속.
                     const N = rgb.length;
-                    const grad = rgb.map((c, i) => `rgb(${c.join(',')}) ${(i / N * 100).toFixed(2)}% ${((i + 1) / N * 100).toFixed(2)}%`).join(', ');
+                    const smooth = document.getElementById('terrainColorSmooth').checked && !!activeDemSource;
+                    const grad = smooth
+                        ? rgb.map((c, i) => `rgb(${c.join(',')}) ${(i / (N - 1) * 100).toFixed(2)}%`).join(', ')
+                        : rgb.map((c, i) => `rgb(${c.join(',')}) ${(i / N * 100).toFixed(2)}% ${((i + 1) / N * 100).toFixed(2)}%`).join(', ');
                     const ticks = [[max, 0]];
                     if (min < 0 && max > 0) ticks.push([0, (max / (max - min)) * 100]);
                     ticks.push([min, 100]);
@@ -1668,7 +1689,7 @@
                 // 경계는 정확히 0이 아니라 +2m에 둔다: 기본 VWorld 지형의 바다는 0m 근처에서 ±수십 cm로 흔들려(실측: 녹색 바다에 흰 점 얼룩)
                 // 0에 두면 반은 육지색이 된다. 2m 아래 육지는 무시할 만하다.
                 const SEA_EDGE = 2;
-                if (cmapKind !== 'norm' && min < SEA_EDGE && max > SEA_EDGE) {
+                if (cmapKind !== 'norm' && min < 0 && max > SEA_EDGE) {   // 범위에 바다(음수)가 있을 때만
                     const N = getTerrainColorSteps();
                     const k = Math.max(1, Math.min(N - 1, Math.round((SEA_EDGE - min) / (max - min) * N))); // 해면 아래 띠 수
                     const snapped = Math.round(min + (SEA_EDGE - min) * N / k);
@@ -1683,7 +1704,63 @@
                 });
                 Module.XDRenderData();
                 showTerrainLegend(1);
+                updateDemColorLayer(min, max, alpha);
             }
+
+            // ---- 부드러운 색: DEM에서 연속 그라데이션(+힐셰이드) 영상 타일을 만들어 지형 위에 덮는다 ----
+            // 엔진 지형 색상(32색 구간 단색) 대신 쓰므로 켜면 setTerrainEffect(0)으로 띠 색을 끈다.
+            const terrainColorSmooth = document.getElementById('terrainColorSmooth');
+            const terrainColorShade = document.getElementById('terrainColorShade');
+            let demColorBusy = false;
+            async function updateDemColorLayer(min, max, alpha) {
+                const want = terrainColorSmooth.checked && activeDemSource
+                    && document.querySelector('input[name="terrainRenderMode"]:checked').value === '1';
+                if (!want) {
+                    removeDemColorLayer();
+                    if (terrainColorSmooth.checked && !activeDemSource) terrainColorSmooth.title = '적용할 DEM이 없습니다. 지형 sdb나 DEM 폴더를 먼저 올리세요.';
+                    return;
+                }
+                if (demColorBusy) return;
+                demColorBusy = true;
+                try {
+                    const cmap = TERRAIN_CMAPS[terrainColorTheme.value] || TERRAIN_CMAPS.natural;
+                    const colors = [];
+                    for (let i = 0; i < 256; i++) colors.push(terrainColorAt(cmap, min + (max - min) * i / 255, min, max));
+                    const ramp = { min, max, colors, alpha };
+                    const hillshade = Number(terrainColorShade.value) || 0;
+                    // 레이어를 새로 만들어야 엔진이 타일을 다시 받는다 (기존 것은 제거)
+                    removeDemColorLayer();
+                    const dem = activeDemSource;
+                    const maxL = Math.min(20, (Number.isFinite(dem.maxL) ? dem.maxL : 14) + 3);
+                    const minL = Math.max(1, Number.isFinite(dem.minL) ? dem.minL : 1);
+                    const src = await window.electronAPI.registerImageSource({
+                        kind: 'demcolor', demSourceId: dem.id, ramp, hillshade, bounds: dem.bounds, minL, maxL
+                    });
+                    if (src.error) { alert('DEM 색상 영상을 만들 수 없습니다.\n\n' + src.error); return; }
+                    const name = `${dem.name} 색상`;
+                    demColorLayer = { id: src.id, name };
+                    Module.getMap().setTerrainEffect(0);   // 띠 색은 끄고 영상으로 본다
+                    const [w, s, e, n] = dem.bounds;
+                    loadMetaLayer(name, {
+                        pathOverride: src.url, keepCamera: true,
+                        meta: {
+                            name, path: src.url, type: 'ETLT_PNG_IMAGE', file: 'png', iconKind: 'coverage',
+                            level: { min: minL, max: maxL },
+                            area: { min: { lon: w, lat: s, alt: 0 }, max: { lon: e, lat: n, alt: 0 } }
+                        }
+                    });
+                } finally {
+                    demColorBusy = false;
+                }
+            }
+            terrainColorSmooth.addEventListener('change', () => {
+                if (document.querySelector('input[name="terrainRenderMode"]:checked').value !== '1') return;
+                if (terrainColorSmooth.checked) applyTerrainColor();
+                else { removeDemColorLayer(); Module.getMap().setTerrainEffect(1); applyTerrainColor(); }
+            });
+            terrainColorShade.addEventListener('change', () => {
+                if (terrainColorSmooth.checked && document.querySelector('input[name="terrainRenderMode"]:checked').value === '1') applyTerrainColor();
+            });
             [terrainColorMin, terrainColorMax, terrainColorTheme, terrainColorSteps].forEach(el => el.addEventListener('change', () => {
                 if (document.querySelector('input[name="terrainRenderMode"]:checked').value === '1') applyTerrainColor();
             }));
@@ -1701,6 +1778,7 @@
                         Module.getMap().setLighting(true);
                         applyTerrainColor();
                     } else {
+                        removeDemColorLayer();
                         showTerrainLegend(val);
                     }
                 });
@@ -1726,6 +1804,16 @@
                 }
                 return scale;
             }
+            // DEM 메시 업샘플 켜기/끄기 (서버 set-dem-upsample → 지형 재요청)
+            const demSmoothToggle = document.getElementById('demSmoothToggle');
+            async function applyDemSmooth(on) {
+                demSmoothToggle.checked = !!on;
+                const levels = await window.electronAPI.setDemUpsample(on ? 3 : 0);
+                if (activeDemSource) { Module.XDEPlanetRefresh(); Module.XDRenderData(); }
+                return levels;
+            }
+            demSmoothToggle.addEventListener('change', () => applyDemSmooth(demSmoothToggle.checked));
+
             demRateSlider.addEventListener('input', () => {
                 // 드래그 중엔 표시만, 멈추면 적용 (타일 재요청이 비싸다)
                 demRateText.textContent = Number(demRateSlider.value).toFixed(1) + '×';
@@ -1737,7 +1825,10 @@
             //   인자: (최소 m, 최대 m, 테마, 불투명도 0~1, 단계 2~32 — 엔진이 앞 32색만 씀)
             //   테마: natural etopo1 relief globe topo terrain viridis turbo gray xd_standard xd_warm xd_sea xd_plant xd_sky
             window.XDV = Object.assign(window.XDV || {}, {
-                terrainColor(min, max, theme = 'natural', opacity = 1, steps = null) {
+                // smooth: true면 DEM 색상 영상(연속 그라데이션+힐셰이드)으로 덮기, shade: 음영 배율(0/1/3/6/10)
+                terrainColor(min, max, theme = 'natural', opacity = 1, steps = null, smooth = null, shade = null) {
+                    if (smooth !== null) terrainColorSmooth.checked = !!smooth;
+                    if (shade !== null && [...terrainColorShade.options].some(o => o.value === String(shade))) terrainColorShade.value = String(shade);
                     if (steps) {
                         const v = String(Math.min(TERRAIN_COLOR_MAX_STEPS, Math.max(2, parseInt(steps, 10) || 32)));
                         if (![...terrainColorSteps.options].some(o => o.value === v)) { const o = document.createElement('option'); o.value = v; o.textContent = v; terrainColorSteps.appendChild(o); }
@@ -1758,6 +1849,10 @@
                     radio.checked = true;
                     radio.dispatchEvent(new Event('change', { bubbles: true }));
                     return 'terrain normal';
+                },
+                // DEM 메시 업샘플(3차 보간) 켜기/끄기
+                async demSmooth(on = true) {
+                    return 'DEM upsample levels ' + (await applyDemSmooth(on));
                 },
                 // 드롭한 DEM의 높이 배율. 슬라이더는 1~10, 콘솔에서는 0.1~50까지. DEM이 없으면 값만 기억해 두었다가 로드 시 적용
                 async demRate(rate = 1) {
@@ -3397,7 +3492,20 @@
 
         // ============ DEM 배율 상태 (분석 패널 슬라이더 ↔ loadMetaLayer 공유) ============
         let currentDemScale = 1;      // 드롭한 DEM 높이 배율. 서버(set-dem-scale)가 타일 값에 곱한다
-        let activeDemSource = null;   // { id, name } — 현재 demBox로 올라간 DEM 소스(로컬 서버 라우트)
+        let activeDemSource = null;   // { id, name, bounds, minL, maxL } — 현재 demBox로 올라간 DEM 소스(로컬 서버 라우트)
+        let demColorLayer = null;     // { id, name } — DEM 색상 영상 레이어(부드러운 그라데이션). 없으면 null
+
+        // DEM 색상 영상 레이어 제거 (엔진 레이어 + 목록 항목 + 서버 소스)
+        function removeDemColorLayer() {
+            if (!demColorLayer) return;
+            try { Module.XDEMapRemoveLayer(demColorLayer.name); } catch (e) { /* 이미 없음 */ }
+            [...document.querySelectorAll('#interface .layer-item')].forEach(item => {
+                const span = item.querySelector('span');
+                if (span && span.textContent === demColorLayer.name) item.remove();
+            });
+            window.electronAPI.unregisterImageSource(demColorLayer.id);
+            demColorLayer = null;
+        }
 
         // ============ 레이어 목록 종류 아이콘 ============
         // 레이어 항목(체크박스 뒤)에 붙는 16px 선 아이콘. layer.meta type -> 종류 매핑은 LAYER_TYPE_ICON.
@@ -5490,15 +5598,16 @@
                             type = Module.TILE_LAYER_TYPE_REAL3D;
                         }else if (layerType == "ETLT_BASE_DEM") {
                             // DEM은 항상 로컬 서버(/__xddem__/)를 거치게 한다: 배율(수직 과장)·빠진 타일 합성이 거기서 된다
+                            const demBounds = [minLon, minLat, maxLon, maxLat];
                             if (opts.demSourceId) {
-                                activeDemSource = { id: opts.demSourceId, name: layerName };
+                                activeDemSource = { id: opts.demSourceId, name: layerName, bounds: demBounds, minL: minLv, maxL: maxLv };
                             } else if (!/^https?:\/\//i.test(layerPath)) {
-                                const demSrc = await window.electronAPI.registerImageSource({ kind: 'demdir', srcDir: layerPath, maxLevel: maxLv });
+                                const demSrc = await window.electronAPI.registerImageSource({ kind: 'demdir', srcDir: layerPath, maxLevel: maxLv, bounds: demBounds });
                                 if (demSrc.error) {
                                     alert(`DEM 폴더를 열 수 없습니다.\n\n${layerPath}\n\n${demSrc.error}`);
                                     return;
                                 }
-                                activeDemSource = { id: demSrc.id, name: layerName };
+                                activeDemSource = { id: demSrc.id, name: layerName, bounds: demBounds, minL: minLv, maxL: maxLv };
                                 layerPath = demSrc.url;
                             } else {
                                 activeDemSource = null; // 원격 DEM은 배율 불가
@@ -5550,6 +5659,7 @@
                                 terrain.SetUseDemBox(false);
                                 Module.XDEPlanetRefresh();
                                 activeDemSource = null;
+                                removeDemColorLayer();
                                 layerItem.remove();
                             });
 
