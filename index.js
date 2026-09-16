@@ -717,6 +717,14 @@ function renderDemColorTile(src, L, idx, idy) {
     return any ? encodePng(256, 256, 6, rgba) : null;
 }
 
+// ============ 기본 VWorld 지형(XDServer dem) 인코딩 ============
+//
+// 실측: requestLayerNode?Layer=dem 응답은 65×65 float32 LE(16,900B, 헤더 없음)인데 값은 높이가 아니라
+//   raw = a × (높이 − 70),  a = (IDX mod 10 + 1) / 2   (0.5 ~ 5.0)
+// 이다. 21개 타일(레벨 0~13)의 엔진 높이(getTerrHeight)와 대조해 확인. 배율 s 적용: raw' = a(s·h − 70) = s·raw + 70a(s − 1)
+// → 엔진이 풀면 h' = s·h. 부모-자식 값 비율(a_c/a_p)이 정확히 맞는 것도 이 공식과 일치한다.
+const baseDemFactor = (idx) => ((idx % 10) + 1) / 2;
+
 function ensureLocalFileServer() {
     if (localFileServer) return Promise.resolve(localFileServerPort);
 
@@ -763,6 +771,36 @@ function ensureLocalFileServer() {
                     return;
                 }
                 return finish(remember(out));
+            }
+
+            // 기본 VWorld 지형 프록시: /__xdbase__/<원 서버 경로>?<쿼리> → https://xdworld.vworld.kr/... 를 받아 그대로(또는 배율 적용) 응답
+            // 실측: requestLayerNode?Layer=dem&Level=&IDX=&IDY= 응답은 gzip 없는 65×65 float32 LE(16,900B). 배율은 값에 직접 곱한다.
+            if (urlPath.startsWith('/__xdbase__/')) {
+                const rest = req.url.substring('/__xdbase__'.length);   // 쿼리 포함 원 경로
+                const target = 'https://xdworld.vworld.kr' + rest;
+                fetch(target, { headers: { 'User-Agent': 'XDViewer' } }).then(async (r) => {
+                    let buf = Buffer.from(await r.arrayBuffer());
+                    const qm = /Layer=dem\b.*?Level=(\d+).*?IDX=(\d+).*?IDY=(\d+).*?APIKey=([^&]+)/.exec(rest);
+                    if (r.ok && qm && buf.length === DEM_N * DEM_N * 4) {
+                        const L = Number(qm[1]), idx = Number(qm[2]), idy = Number(qm[3]);
+                        const g = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+                        if (baseDemScale !== 1) {
+                            const a = baseDemFactor(idx), s = baseDemScale, off = 70 * a * (s - 1);
+                            const out = new Float32Array(g.length);
+                            for (let i = 0; i < g.length; i++) out[i] = s * g[i] + off;
+                            buf = Buffer.from(out.buffer);
+                            if (process.env.XDREQ_DEBUG) console.log(`[srv] base dem ${L}/${idx}/${idy} a=${a} x${s}`);
+                        }
+                    }
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] base ${r.status} ${rest.slice(0, 140)} | ${r.headers.get('content-type')} | ${buf.length}B | ${buf.slice(0, 8).toString('hex')}`);
+                    res.writeHead(r.status, { 'Access-Control-Allow-Origin': '*', 'Content-Type': r.headers.get('content-type') || 'application/octet-stream' });
+                    res.end(buf);
+                }).catch((e) => {
+                    console.warn(`[srv] base proxy 실패 ${rest.slice(0, 100)}: ${e.message}`);
+                    res.writeHead(502);
+                    res.end(e.message);
+                });
+                return;
             }
 
             // 요청 단위 지형 타일: /__xddem__/<id>/<L>/<IDY>/<IDY>_<IDX>.bil  (gzip bil blob 그대로)
@@ -942,9 +980,9 @@ if (!gotTheLock) {
 }
 
 /** Application이 준비된 후 실행할 스크립트를 지정 */
-app.whenReady().then(() => {
-    // 스플래시 창 생성
-
+app.whenReady().then(async () => {
+    // 로컬 타일 서버를 창보다 먼저 띄운다: 렌더러가 엔진 초기화 때 기본 지형 URL을 이 서버(프록시)로 잡아야 하므로
+    await ensureLocalFileServer();
 
     createWindow(); // 메인 창 생성
 
@@ -1040,6 +1078,9 @@ ipcMain.handle('get-app-version', () => {
 });
 
 // 로컬 파일을 HTTP URL로 변환 (디렉토리 구조 유지하여 텍스처 상대경로 해결)
+// 렌더러가 엔진 초기화(동기) 시점에 로컬 서버 포트를 알아야 해서 sendSync
+ipcMain.on('get-local-server-port', (event) => { event.returnValue = localFileServerPort; });
+
 ipcMain.handle('get-local-file-url', async (event, filePath) => {
     await ensureLocalFileServer();
     // 경로의 각 세그먼트를 개별 인코딩하여 디렉토리 구조 유지
@@ -1125,6 +1166,10 @@ ipcMain.handle('update-dem-color', (event, id, opts) => {
     src.cache.clear();
     return true;
 });
+
+// 기본 VWorld 지형 배율 (프록시 응답에 곱함). 렌더러가 XDEPlanetRefresh로 다시 받는다
+let baseDemScale = 1;
+ipcMain.handle('set-base-dem-scale', (event, scale) => { baseDemScale = Number(scale) || 1; return baseDemScale; });
 
 // 지형 소스의 높이 배율. 캐시(합성 타일 포함)는 원본 기준이라 응답 시점에 곱하므로 비우기만 한다
 ipcMain.handle('set-dem-scale', (event, id, scale) => {

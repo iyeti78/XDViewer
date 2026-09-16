@@ -336,6 +336,12 @@
                                     <option value="32" selected>32 (최대)</option>
                                 </select>
                             </div>
+                            <div class="row" title="엔진 조명은 삼각형 면 단위라 켜면 지형이 각져(깍두기) 보임. 입체감이 필요하면 아래 부드러운 색의 힐셰이드를 쓰는 편이 낫다">
+                                <label class="settings-checkbox-label" style="gap:6px;">
+                                    <input type="checkbox" id="terrainColorLighting">
+                                    <span>엔진 조명 (면 단위, 각져 보임)</span>
+                                </label>
+                            </div>
                             <div class="row" title="엔진 지형 색상은 32색 구간 단색이라 띠가 생김. 켜면 DEM에서 연속 그라데이션+힐셰이드 영상 타일을 만들어 지형 위에 덮는다 (드롭한 DEM에만)">
                                 <label class="settings-checkbox-label" style="gap:6px;">
                                     <input type="checkbox" id="terrainColorSmooth">
@@ -367,8 +373,8 @@
                             <input type="range" id="tileRatioSlider" min="1" max="4" step="0.5" value="1" style="flex:1;">
                             <span id="tileRatioText" style="color:#cccccc; font-size:11px; min-width:34px; text-align:right;">1.0×</span>
                         </div>
-                        <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="드롭한 지형(DEM)의 높이를 몇 배로 과장할지. 해저 골짜기나 산의 계곡이 잘 보이게. 기본 지형에는 적용되지 않음">
-                            <span class="settings-label" style="margin:0; min-width:48px;">DEM 배율</span>
+                        <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="지형 높이를 몇 배로 과장할지(기본 VWorld 지형과 드롭한 DEM 모두). 해저 골짜기나 산의 계곡이 잘 보이게">
+                            <span class="settings-label" style="margin:0; min-width:48px;">지형 배율</span>
                             <input type="range" id="demRateSlider" min="1" max="10" step="0.5" value="1" style="flex:1;">
                             <span id="demRateText" style="color:#cccccc; font-size:11px; min-width:34px; text-align:right;">1.0×</span>
                         </div>
@@ -1737,6 +1743,12 @@
             // 엔진 지형 색상(32색 구간 단색) 대신 쓰므로 켜면 setTerrainEffect(0)으로 띠 색을 끈다.
             const terrainColorSmooth = document.getElementById('terrainColorSmooth');
             const terrainColorShade = document.getElementById('terrainColorShade');
+            const terrainColorLighting = document.getElementById('terrainColorLighting');
+            terrainColorLighting.addEventListener('change', () => {
+                if (document.querySelector('input[name="terrainRenderMode"]:checked').value !== '1') return;
+                Module.getMap().setLighting(terrainColorLighting.checked && !terrainColorSmooth.checked);
+                Module.XDRenderData();
+            });
             let demColorBusy = false;
             async function updateDemColorLayer(min, max, alpha) {
                 const want = terrainColorSmooth.checked && activeDemSource
@@ -1783,7 +1795,7 @@
             terrainColorSmooth.addEventListener('change', () => {
                 if (document.querySelector('input[name="terrainRenderMode"]:checked').value !== '1') return;
                 if (terrainColorSmooth.checked) applyTerrainColor();
-                else { removeDemColorLayer(); Module.getMap().setTerrainEffect(1); Module.getMap().setLighting(true); applyTerrainColor(); }
+                else { removeDemColorLayer(); Module.getMap().setTerrainEffect(1); Module.getMap().setLighting(terrainColorLighting.checked); applyTerrainColor(); }
             });
             terrainColorShade.addEventListener('change', () => {
                 if (terrainColorSmooth.checked && document.querySelector('input[name="terrainRenderMode"]:checked').value === '1') applyTerrainColor();
@@ -1802,8 +1814,8 @@
                     terrainColorOptions.classList.toggle('open', val === 1);
                     Module.getMap().setTerrainEffect(val);
                     if (val === 1) {
-                        // 띠 색상은 조명이 있어야 입체감이 남. 나갈 때 반드시 끈다(켠 채 두면 기본 영상에 타일 단위 음영 얼룩 = 깍두기, 실측)
-                        Module.getMap().setLighting(!terrainColorSmooth.checked);
+                        // 엔진 조명은 면 단위라 각져 보여 기본 꺼짐(체크박스). 나갈 때 반드시 끈다(켠 채 두면 기본 영상에 타일 단위 얼룩, 실측)
+                        Module.getMap().setLighting(terrainColorLighting.checked && !terrainColorSmooth.checked);
                         applyTerrainColor();
                     } else {
                         removeDemColorLayer();
@@ -1826,11 +1838,11 @@
                 currentDemScale = scale;
                 demRateText.textContent = scale.toFixed(1) + '×';
                 if (Number(demRateSlider.value) !== scale) demRateSlider.value = Math.min(Number(demRateSlider.max), scale);
-                if (activeDemSource) {
-                    await window.electronAPI.setDemScale(activeDemSource.id, scale);
-                    Module.XDEPlanetRefresh();   // 지형 타일 재요청
-                    Module.XDRenderData();
-                }
+                // 기본 VWorld 지형(프록시)과 드롭한 DEM 소스 모두에 적용
+                await window.electronAPI.setBaseDemScale(scale);
+                if (activeDemSource) await window.electronAPI.setDemScale(activeDemSource.id, scale);
+                Module.XDEPlanetRefresh();   // 지형 타일 재요청
+                Module.XDRenderData();
                 return scale;
             }
             // 타일 LOD 비율 (엔진 Module.getMap().setTerrLODRatio, getter 없음). 실측: 2면 같은 카메라에서 레벨 11~12 타일이 2배 이상 요청됨
@@ -1911,7 +1923,7 @@
                 // 드롭한 DEM의 높이 배율. 슬라이더는 1~10, 콘솔에서는 0.1~50까지. DEM이 없으면 값만 기억해 두었다가 로드 시 적용
                 async demRate(rate = 1) {
                     const v = await applyDemScale(rate);
-                    return `DEM scale ${v}×` + (activeDemSource ? ` (${activeDemSource.name})` : ' (적용할 DEM 없음: 지형 sdb나 DEM 폴더를 먼저 올리세요)');
+                    return `terrain scale ${v}× (기본 지형` + (activeDemSource ? ` + ${activeDemSource.name})` : ')');
                 }
             });
 
@@ -3903,7 +3915,8 @@
                     container: document.getElementById("map"), // 지도 컨테이너 설정
                     terrain: {
                         dem: {
-                            url: "https://xdworld.vworld.kr",
+                            // 기본 지형은 로컬 서버 프록시(/__xdbase__)를 거쳐 받는다: 기본 DEM에도 배율(수직 과장)을 곱하기 위해
+                            url: (() => { try { const p = window.electronAPI.getLocalServerPort(); return p ? `http://127.0.0.1:${p}/__xdbase__` : "https://xdworld.vworld.kr"; } catch (e) { return "https://xdworld.vworld.kr"; } })(),
                             name: "dem",
                             servername: "XDServer3d",
                             encoding: true

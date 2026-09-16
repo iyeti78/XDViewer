@@ -117,6 +117,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   openExternal: (url) => shell.openExternal(url),
   getLocalFileUrl: (filePath) => ipcRenderer.invoke('get-local-file-url', filePath),
+  getLocalServerPort: () => ipcRenderer.sendSync('get-local-server-port'),
   pathExists: (dirPath) => fs.existsSync(dirPath),
   isDirectory: (p) => {
     try {
@@ -136,6 +137,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   registerImageSource: (opts) => ipcRenderer.invoke('register-image-source', opts),
   unregisterImageSource: (id) => ipcRenderer.invoke('unregister-image-source', id),
   setDemScale: (id, scale) => ipcRenderer.invoke('set-dem-scale', id, scale),
+  setBaseDemScale: (scale) => ipcRenderer.invoke('set-base-dem-scale', scale),
   updateDemColor: (id, opts) => ipcRenderer.invoke('update-dem-color', id, opts),
   setDemUpsample: (levels) => ipcRenderer.invoke('set-dem-upsample', levels),
   clearTileCaches: () => ipcRenderer.invoke('clear-tile-caches'),
