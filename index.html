@@ -43,6 +43,18 @@
         <div id="legendItems" style="display:flex; flex-direction:column; gap:2px;"></div>
     </div>
 
+    <!-- 오른쪽 아래: 전체화면 -->
+    <div id="corner-controls" style="position:absolute; right:12px; bottom:12px; z-index:900; display:flex; gap:4px;">
+        <button id="btnFullscreen" class="map-control-btn" title="전체화면 (F11)">
+            <svg id="iconFsEnter" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg id="iconFsExit" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:none;">
+                <path d="M6 2v4H2M10 6V2h4M14 10h-4v4M2 10h4v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </button>
+    </div>
+
     <!-- 지도 컨트롤 버튼 -->
     <div id="map-controls">
         <button id="btnReload" class="map-control-btn" title="새로고침: 카메라는 그대로 두고 지형·영상 타일을 다시 그림 (XDEPlanetRefresh)">
@@ -197,6 +209,15 @@
                     <span>설정</span>
                 </div>
                 <div class="panel-content settings-content">
+                    <div class="settings-section">
+                        <div class="settings-label">엔진 버전 <span id="engineVersionNow" style="color:#858585;"></span></div>
+                        <!-- cdn.xdworld.kr/<버전>/XDWorldEM.js. 바꾸면 앱을 다시 불러온다(엔진 교체는 리로드가 필수) -->
+                        <select id="engineVersionSelect" class="settings-select" title="XDWorld 엔진 버전. 변경하면 앱이 다시 로딩됩니다">
+                            <option value="latest">latest (최신)</option>
+                            <option value="stable">stable</option>
+                            <optgroup label="과거 버전" id="engineVersionOld"></optgroup>
+                        </select>
+                    </div>
                     <div class="settings-section">
                         <div class="settings-label">배경지도</div>
                         <select id="basemapSelect" class="settings-select">
@@ -1407,6 +1428,33 @@
                 Module.XDRenderData();
             }
             document.getElementById('btnReload').addEventListener('click', refreshPlanet);
+
+            // 엔진 버전 선택
+            (() => {
+                const sel = document.getElementById('engineVersionSelect');
+                const grp = document.getElementById('engineVersionOld');
+                XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; grp.appendChild(o); });
+                sel.value = XD_ENGINE_VERSION;
+                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION})`;
+                sel.addEventListener('change', () => {
+                    const v = sel.value;
+                    if (v === XD_ENGINE_VERSION) return;
+                    if (!confirm(`엔진을 ${v}(으)로 바꾸려면 앱을 다시 불러와야 합니다. 열린 레이어는 닫힙니다.\n계속할까요?`)) { sel.value = XD_ENGINE_VERSION; return; }
+                    try { localStorage.setItem('xdv.engineVersion', v); } catch (e) { /* 무시 */ }
+                    location.reload();
+                });
+            })();
+
+            // 전체화면 (오른쪽 아래 버튼, F11)
+            (() => {
+                const btn = document.getElementById('btnFullscreen');
+                const enter = document.getElementById('iconFsEnter'), exit = document.getElementById('iconFsExit');
+                const show = (fs) => { enter.style.display = fs ? 'none' : ''; exit.style.display = fs ? '' : 'none'; btn.title = fs ? '전체화면 해제 (F11)' : '전체화면 (F11)'; };
+                const toggle = async () => { try { show(await window.electronAPI.toggleFullscreen()); } catch (e) { /* 무시 */ } };
+                btn.addEventListener('click', toggle);
+                window.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); toggle(); } });
+                window.electronAPI.isFullscreen && window.electronAPI.isFullscreen().then(show).catch(() => {});
+            })();
             window.addEventListener('keydown', (e) => {
                 if (e.key === 'F5' && !e.ctrlKey && !e.altKey) { e.preventDefault(); location.reload(); }
             });
@@ -3905,10 +3953,23 @@
             if (bottomPanelVisible) updateMapSize();
         };
 
+        // ============ 엔진 버전 (cdn.xdworld.kr/<버전>/) ============
+        // 설정 패널에서 고르고 localStorage에 저장. 엔진 교체는 페이지를 다시 불러와야 하므로 변경 시 location.reload().
+        // 목록은 CDN에서 실측한 존재 버전(2026-09). 새 버전이 나오면 여기에 추가.
+        const XD_ENGINE_VERSIONS = ['2.30.1', '2.30.0', '2.29.4', '2.29.3', '2.29.2', '2.29.1', '2.29.0', '2.28.3', '2.28.2', '2.28.1', '2.28.0',
+            '2.27.3', '2.27.2', '2.27.1', '2.27.0', '2.26.0', '2.25.1', '2.25.0', '2.24.1', '2.24.0', '2.23.0', '2.22.0', '2.21.0', '2.20.1', '2.20.0'];
+        const XD_ENGINE_VERSION = (() => {
+            try {
+                const v = localStorage.getItem('xdv.engineVersion');
+                if (v && (v === 'latest' || v === 'stable' || XD_ENGINE_VERSIONS.includes(v))) return v;
+            } catch (e) { /* 저장소 없음 */ }
+            return 'latest';
+        })();
+
         // XDWorld 모듈 설정
         var Module = {
             locateFile: function (s) {
-                return "https://cdn.xdworld.kr/latest/" + s; // 모듈 파일 경로 설정
+                return "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/" + s; // 모듈 파일 경로 설정 (설정 패널에서 선택, localStorage)
             },
             postRun: function () {
                 Module.initialize({
@@ -3956,7 +4017,7 @@
 
         // XDWorld 스크립트 동적 로드
         var script = document.createElement('script');
-        script.src = "https://cdn.xdworld.kr/latest/XDWorldEM.js";
+        script.src = "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/XDWorldEM.js";
         document.body.appendChild(script);
 
         function createPointObjects(layer, features, altitude, color, customIconUrl, pointSize = 10) {

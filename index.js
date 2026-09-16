@@ -725,6 +725,32 @@ function renderDemColorTile(src, L, idx, idy) {
 // → 엔진이 풀면 h' = s·h. 부모-자식 값 비율(a_c/a_p)이 정확히 맞는 것도 이 공식과 일치한다.
 const baseDemFactor = (idx) => ((idx % 10) + 1) / 2;
 
+// 기본 지형 프록시의 원본 응답 캐시(LRU)와 재시도. 실패한 타일은 엔진이 다시 요청하지 않고 높이 0으로 남기므로 여기서 최대한 살린다.
+const baseTileCache = new Map();   // url -> { status, contentType, buf }
+async function fetchBaseWithRetry(url, attempts = 3) {
+    const hit = baseTileCache.get(url);
+    if (hit) return hit;
+    let lastErr = null;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const r = await fetch(url, { headers: { 'User-Agent': 'XDViewer' }, signal: AbortSignal.timeout(15000) });
+            const buf = Buffer.from(await r.arrayBuffer());
+            if (!r.ok && r.status >= 500) throw new Error(`HTTP ${r.status}`);
+            const entry = { ok: r.ok, status: r.status, contentType: r.headers.get('content-type'), buf };
+            if (r.ok) {
+                if (baseTileCache.size >= 2500) baseTileCache.delete(baseTileCache.keys().next().value);
+                baseTileCache.set(url, entry);
+            }
+            return entry;
+        } catch (e) {
+            lastErr = e;
+            if (process.env.XDREQ_DEBUG) console.log(`[srv] base 재시도 ${i + 1}/${attempts} ${url.slice(-60)}: ${e.message}`);
+            await new Promise(r => setTimeout(r, 300 * (i + 1)));
+        }
+    }
+    throw lastErr || new Error('fetch failed');
+}
+
 function ensureLocalFileServer() {
     if (localFileServer) return Promise.resolve(localFileServerPort);
 
@@ -778,8 +804,9 @@ function ensureLocalFileServer() {
             if (urlPath.startsWith('/__xdbase__/')) {
                 const rest = req.url.substring('/__xdbase__'.length);   // 쿼리 포함 원 경로
                 const target = 'https://xdworld.vworld.kr' + rest;
-                fetch(target, { headers: { 'User-Agent': 'XDViewer' } }).then(async (r) => {
-                    let buf = Buffer.from(await r.arrayBuffer());
+                // 프록시가 실패 지점이 되면 엔진이 그 타일을 높이 0으로 그려 사각형 구멍이 생긴다(실측) → 3회 재시도 + 성공 응답 캐시
+                fetchBaseWithRetry(target).then(async (r) => {
+                    let buf = r.buf;
                     const qm = /Layer=dem\b.*?Level=(\d+).*?IDX=(\d+).*?IDY=(\d+).*?APIKey=([^&]+)/.exec(rest);
                     if (r.ok && qm && buf.length === DEM_N * DEM_N * 4) {
                         const L = Number(qm[1]), idx = Number(qm[2]), idy = Number(qm[3]);
@@ -792,11 +819,11 @@ function ensureLocalFileServer() {
                             if (process.env.XDREQ_DEBUG) console.log(`[srv] base dem ${L}/${idx}/${idy} a=${a} x${s}`);
                         }
                     }
-                    if (process.env.XDREQ_DEBUG) console.log(`[srv] base ${r.status} ${rest.slice(0, 140)} | ${r.headers.get('content-type')} | ${buf.length}B | ${buf.slice(0, 8).toString('hex')}`);
-                    res.writeHead(r.status, { 'Access-Control-Allow-Origin': '*', 'Content-Type': r.headers.get('content-type') || 'application/octet-stream' });
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] base ${r.status} ${rest.slice(0, 140)} | ${r.contentType} | ${buf.length}B | ${buf.slice(0, 8).toString('hex')}`);
+                    res.writeHead(r.status, { 'Access-Control-Allow-Origin': '*', 'Content-Type': r.contentType || 'application/octet-stream' });
                     res.end(buf);
                 }).catch((e) => {
-                    console.warn(`[srv] base proxy 실패 ${rest.slice(0, 100)}: ${e.message}`);
+                    console.warn(`[srv] base proxy 실패(3회) ${rest.slice(0, 100)}: ${e.message}`);
                     res.writeHead(502);
                     res.end(e.message);
                 });
@@ -1078,6 +1105,15 @@ ipcMain.handle('get-app-version', () => {
 });
 
 // 로컬 파일을 HTTP URL로 변환 (디렉토리 구조 유지하여 텍스처 상대경로 해결)
+// 전체화면 토글 (오른쪽 아래 버튼 / F11)
+ipcMain.handle('toggle-fullscreen', () => {
+    if (!mainWindow) return false;
+    const next = !mainWindow.isFullScreen();
+    mainWindow.setFullScreen(next);
+    return next;
+});
+ipcMain.handle('is-fullscreen', () => !!(mainWindow && mainWindow.isFullScreen()));
+
 // 렌더러가 엔진 초기화(동기) 시점에 로컬 서버 포트를 알아야 해서 sendSync
 ipcMain.on('get-local-server-port', (event) => { event.returnValue = localFileServerPort; });
 

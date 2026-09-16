@@ -118,6 +118,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => shell.openExternal(url),
   getLocalFileUrl: (filePath) => ipcRenderer.invoke('get-local-file-url', filePath),
   getLocalServerPort: () => ipcRenderer.sendSync('get-local-server-port'),
+  toggleFullscreen: () => ipcRenderer.invoke('toggle-fullscreen'),
+  isFullscreen: () => ipcRenderer.invoke('is-fullscreen'),
   pathExists: (dirPath) => fs.existsSync(dirPath),
   isDirectory: (p) => {
     try {
