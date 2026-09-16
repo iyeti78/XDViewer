@@ -1766,6 +1766,7 @@
                     const name = `${dem.name} 색상`;
                     demColorLayer = { id: src.id, name };
                     Module.getMap().setTerrainEffect(0);   // 띠 색은 끄고 영상으로 본다
+                    Module.getMap().setLighting(false);    // 힐셰이드가 영상에 들어 있으니 엔진 조명은 끔(기본 영상 얼룩 방지)
                     const [w, s, e, n] = dem.bounds;
                     loadMetaLayer(name, {
                         pathOverride: src.url, keepCamera: true,
@@ -1782,7 +1783,7 @@
             terrainColorSmooth.addEventListener('change', () => {
                 if (document.querySelector('input[name="terrainRenderMode"]:checked').value !== '1') return;
                 if (terrainColorSmooth.checked) applyTerrainColor();
-                else { removeDemColorLayer(); Module.getMap().setTerrainEffect(1); applyTerrainColor(); }
+                else { removeDemColorLayer(); Module.getMap().setTerrainEffect(1); Module.getMap().setLighting(true); applyTerrainColor(); }
             });
             terrainColorShade.addEventListener('change', () => {
                 if (terrainColorSmooth.checked && document.querySelector('input[name="terrainRenderMode"]:checked').value === '1') applyTerrainColor();
@@ -1801,10 +1802,12 @@
                     terrainColorOptions.classList.toggle('open', val === 1);
                     Module.getMap().setTerrainEffect(val);
                     if (val === 1) {
-                        Module.getMap().setLighting(true);
+                        // 띠 색상은 조명이 있어야 입체감이 남. 나갈 때 반드시 끈다(켠 채 두면 기본 영상에 타일 단위 음영 얼룩 = 깍두기, 실측)
+                        Module.getMap().setLighting(!terrainColorSmooth.checked);
                         applyTerrainColor();
                     } else {
                         removeDemColorLayer();
+                        Module.getMap().setLighting(false);
                         showTerrainLegend(val);
                     }
                 });
