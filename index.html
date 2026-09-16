@@ -45,6 +45,13 @@
 
     <!-- 지도 컨트롤 버튼 -->
     <div id="map-controls">
+        <button id="btnReload" class="map-control-btn" title="새로고침 (앱 다시 불러오기, F5)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 3.5v3.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M3.6 7A5 5 0 0 1 13 8a5 5 0 0 1-8.7 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="8" cy="8" r="1.2" fill="currentColor"/>
+            </svg>
+        </button>
         <button id="btnResetView" class="map-control-btn" title="초기화">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M2 8a6 6 0 0 1 10.47-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -1380,6 +1387,12 @@
             });
 
             // 지도 컨트롤 버튼
+            // 새로고침: 렌더러(엔진 포함)를 다시 불러온다. Electron은 메뉴가 없어 F5가 기본으로 묶여 있지 않아 키도 직접 처리
+            document.getElementById('btnReload').addEventListener('click', () => location.reload());
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'F5' && !e.ctrlKey && !e.altKey) { e.preventDefault(); location.reload(); }
+            });
+
             document.getElementById('btnResetView').addEventListener('click', () => {
                 Module.getViewCamera().move(new Module.JSVector3D(126.9, 37.5, 19000000), 89.9, 0, 0);
             });
