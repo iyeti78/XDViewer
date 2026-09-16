@@ -320,6 +320,17 @@ function openTileDbFile(file) {
     return immutable();
 }
 
+/** 타일 조회 래퍼: 네트워크 공유의 일시적 I/O 오류 등 예외가 나면 한 번 재시도, 그래도 실패면 null(빠진 타일로 취급) + 로그 */
+function safeGetTile(fn) {
+    return (L, idx, idy) => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try { return fn(L, idx, idy); }
+            catch (e) { if (attempt === 1) console.warn(`[tile] getTile(${L},${idx},${idy}) 실패: ${e.message}`); }
+        }
+        return null;
+    };
+}
+
 function openTileDb(file) {
     const db = openTileDbFile(file);
     const num = (v) => (typeof v === 'bigint' ? Number(v) : v);
@@ -369,10 +380,10 @@ function openTileDb(file) {
 
             zoomCol = 'zoom_level'; dataCol = 'tile_data';
             const stmt = db.prepare(`SELECT tile_data FROM "${tileTable}" WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?`);
-            getTile = (L, idx, idy) => {
+            getTile = safeGetTile((L, idx, idy) => {
                 const r = stmt.get(L, idx, 5 * 2 ** L - 1 - idy);   // gpkg tile_row는 위쪽 원점
                 return r ? Buffer.from(r.tile_data) : null;
-            };
+            });
         } else if (tables.has('tiles')) {
             const cols = db.prepare('PRAGMA table_info(tiles)').all().map(c => c.name);
             if (!['level', 'idx', 'idy', 'data'].every(c => cols.includes(c))) {
@@ -387,10 +398,10 @@ function openTileDb(file) {
             }
             zoomCol = 'level'; dataCol = 'data';
             const stmt = db.prepare('SELECT data FROM tiles WHERE level = ? AND idx = ? AND idy = ?');
-            getTile = (L, idx, idy) => {
+            getTile = safeGetTile((L, idx, idy) => {
                 const r = stmt.get(L, idx, idy);
                 return r && r.data ? Buffer.from(r.data) : null;
-            };
+            });
         } else {
             throw new Error(`타일 테이블을 찾지 못했습니다. 테이블: ${[...tables].join(', ')}`);
         }
@@ -637,7 +648,10 @@ function synthesizeDemTile(src, L, idx, idy, maxUp = 6, clampNegative = true) {
 function demGridForColor(dem, L, idx, idy) {
     let blob = dem.db.getTile(L, idx, idy);
     if (!blob) blob = synthesizeDemTile(dem, L, idx, idy, 8, false);
-    return blob ? decodeDemGrid(blob) : null;
+    if (!blob) { if (process.env.XDREQ_DEBUG) console.log(`[demcolor] 격자 없음 ${L}/${idy}/${idx} (실제·상위 8레벨 모두 없음)`); return null; }
+    const g = decodeDemGrid(blob);
+    if (!g) console.warn(`[demcolor] 타일 디코딩 실패 ${L}/${idy}/${idx} (65x65 float32 gzip 아님)`);
+    return g;
 }
 
 function renderDemColorTile(src, L, idx, idy) {
@@ -731,6 +745,7 @@ function ensureLocalFileServer() {
                     res.end(png);
                 };
                 const remember = (png) => {
+                    if (png === null && src.kind === 'demcolor') return png;   // 색상 영상의 빈 결과는 캐시하지 않음(일시 오류일 수 있음)
                     if (src.cache.size >= 512) src.cache.delete(src.cache.keys().next().value);
                     src.cache.set(key, png);
                     return png;
