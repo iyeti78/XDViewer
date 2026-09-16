@@ -611,6 +611,13 @@ function synthesizeDemTile(src, L, idx, idy, maxUp = 6, clampNegative = true) {
                     col[j + 1] = cubic(a, b, cc, d, tx);
                 }
                 let v = bad ? sample(Math.round(fx), Math.round(fy)) : cubic(col[0], col[1], col[2], col[3], ty);
+                if (!bad) {
+                    // 오버슈트 제거: 3차 보간은 급변부(해안 0m↔-3000m)에서 원래 값 범위를 넘어 튀고, DEM 배율을 곱하면 가시가 된다(실측).
+                    // 값을 둘러싼 2×2 셀의 최소·최대 안으로 누른다(이중선형 범위). 셀 안은 여전히 3차 곡면.
+                    const q0 = sample(x0, y0), q1 = sample(x0 + 1, y0), q2 = sample(x0, y0 + 1), q3 = sample(x0 + 1, y0 + 1);
+                    const lo = Math.min(q0, q1, q2, q3), hi = Math.max(q0, q1, q2, q3);
+                    if (v < lo) v = lo; else if (v > hi) v = hi;
+                }
                 if (clampNegative && v < 0) v = 0;
                 out[r * DEM_N + c] = v;
             }
