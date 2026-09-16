@@ -53,7 +53,7 @@
   - 컬러맵: 기본 **자연색 지형(NASA 스타일)**, 지형·수심용 ETOPO1(GMT/NOAA), GMT relief, GMT globe, cmocean topo(해면 0m 기준으로 바다/육지 분리), 범용 matplotlib terrain, viridis, turbo, grayscale, 그리고 XDWorld 샘플의 Terrain Altitude Color(Standard·Warm·Sea·Plant·Sky).
   - 색 단계는 최대 32(엔진 제한). 줄이면 등고선처럼 띠가 뚜렷해짐. 범례도 같은 띠로 표시. 범위를 실제 데이터에 맞게 좁힐수록 띠가 촘촘해짐.
   - **DEM 배율** 슬라이더(1~10×)로 드롭한 지형(DEM)의 높이를 과장해 해저 골짜기·산의 계곡을 강조. 타일 높이값 자체에 배율을 곱해 응답하므로 화면과 높이 조회가 일치. 기본 VWorld 지형에는 적용되지 않음(엔진의 demRate는 1 이하 평탄화 전용).
-  - 지형 최대 레벨(layer.meta의 level.max, sdb는 실제 데이터)을 넘는 상세 타일은 만들어내지 않고 상위 레벨 지형을 그대로 보임.
+  - 지형 최대 레벨(layer.meta의 level.max, sdb는 실제 데이터) 위로 3레벨까지는 3차 보간으로 메시를 촘촘히 만들어 부드럽게 보이고(ArcGIS와 비슷한 인상), 그 위는 마지막 레벨 지형을 유지.
   - F12 콘솔에서도 가능: `XDV.terrainColor(-6000, 4000)` · `XDV.terrainColor(0, 600, 'viridis', 0.8, 16)` · `XDV.terrainNormal()` · `XDV.demRate(4)`
 - 카메라:
   - 줌아웃 고도 상한 5,000만 m. 무제한으로 멀어져 지구본이 사라지는 것을 막는다(휠 차단 + 프레임 단위 되돌림).

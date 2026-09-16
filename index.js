@@ -539,40 +539,78 @@ function scaleDemTile(blob, scale) {
     return zlib.gzipSync(Buffer.from(f.buffer, f.byteOffset, f.byteLength));
 }
 
-function synthesizeDemTile(src, L, idx, idy, maxUp = 6) {
+// 데이터 최대 레벨 위로 몇 레벨까지 부드럽게 만들어 줄지. 3 = 정점 간격 1/8 (레벨 7 약 500m → 약 60m).
+// 엔진은 면 단위로 음영을 넣어 메시가 성기면 삼각형이 그대로 보이므로, ArcGIS처럼 원 해상도 위에서는 3차 보간으로 메시를 촘촘히 한다.
+// 그 위는 404 → 엔진이 마지막 레벨을 유지. 개발용 env XDV_DEM_UPSAMPLE로 바꿀 수 있다(0이면 끔).
+const DEM_UPSAMPLE_LEVELS = process.env.XDV_DEM_UPSAMPLE !== undefined ? Math.max(0, parseInt(process.env.XDV_DEM_UPSAMPLE, 10) || 0) : 3;
+
+function decodeDemGrid(blob) {
+    try {
+        const u = zlib.gunzipSync(blob);
+        if (u.length !== DEM_N * DEM_N * 4) return null;
+        return new Float32Array(u.buffer, u.byteOffset, DEM_N * DEM_N);
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
+ * 부모 레벨 격자에서 3차(Catmull-Rom) 보간으로 자식 타일을 만든다. 타일 가장자리에서는 이웃 부모 타일의 샘플을
+ * 끌어와 경계에서도 기울기가 이어지게 한다(없으면 가장자리 값으로 고정). nodata(≤ -30000)가 섞인 곳은 최근접 값.
+ * clampNegative: 피라미드 안의 빠진 타일을 메울 때(cop30처럼 바다 상세 타일이 생략된 경우) 해안 타일(0m)과 절벽이
+ *   안 생기게 음수를 0으로. 최대 레벨 위 업샘플링에서는 수심을 살려야 하니 false.
+ */
+function synthesizeDemTile(src, L, idx, idy, maxUp = 6, clampNegative = true) {
     for (let k = 1; k <= maxUp && L - k >= 0; k++) {
         const f = 2 ** k;
-        const pIdx = Math.floor(idx / f), pIdy = Math.floor(idy / f);
-        const blob = src.db.getTile(L - k, pIdx, pIdy);
-        if (!blob) continue;
+        const pL = L - k, pIdx = Math.floor(idx / f), pIdy = Math.floor(idy / f);
+        const center = src.db.getTile(pL, pIdx, pIdy);
+        if (!center) continue;
+        const centerGrid = decodeDemGrid(center);
+        if (!centerGrid) return null;
 
-        let parent;
-        try {
-            const u = zlib.gunzipSync(blob);
-            if (u.length !== DEM_N * DEM_N * 4) return null;
-            parent = new Float32Array(u.buffer, u.byteOffset, DEM_N * DEM_N);
-        } catch (_) {
-            return null;
-        }
+        // 이웃 부모 타일 격자 (dx: 동+, dy: 북+). 필요할 때만 읽고 캐시. 모서리 공유라 이웃의 0열 == 내 64열.
+        const grids = new Map([['0,0', centerGrid]]);
+        const grid = (dx, dy) => {
+            const key = `${dx},${dy}`;
+            if (!grids.has(key)) {
+                const b = src.db.getTile(pL, pIdx + dx, pIdy + dy);
+                grids.set(key, b ? decodeDemGrid(b) : null);
+            }
+            return grids.get(key);
+        };
+        const M = DEM_N - 1; // 64
+        // 부모 격자 좌표 (col, rowFromNorth) — 범위 밖이면 이웃 타일에서
+        const sample = (col, row) => {
+            let dx = 0, dy = 0, c = col, r = row;
+            if (c < 0) { dx = -1; c += M; } else if (c > M) { dx = 1; c -= M; }
+            if (r < 0) { dy = 1; r += M; } else if (r > M) { dy = -1; r -= M; }   // 행 0이 북쪽: 위로 벗어나면 북쪽 이웃(idy+1)
+            const g = (dx === 0 && dy === 0) ? centerGrid : grid(dx, dy);
+            if (!g) return centerGrid[Math.min(M, Math.max(0, row)) * DEM_N + Math.min(M, Math.max(0, col))];
+            return g[r * DEM_N + c];
+        };
+        const cubic = (p0, p1, p2, p3, t) => 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
 
-        // 자식이 차지하는 부모 샘플 구간: 폭 span, x 시작 ox, 북쪽 기준 행 시작 oyTop
-        const span = (DEM_N - 1) / f;
+        const span = M / f;
         const ox = (idx - pIdx * f) * span;
-        const oyTop = (DEM_N - 1) - (idy - pIdy * f) * span - span;
+        const oyTop = M - (idy - pIdy * f) * span - span;
         const out = new Float32Array(DEM_N * DEM_N);
+        const col = new Float64Array(4);
         for (let r = 0; r < DEM_N; r++) {
-            const fy = oyTop + r * span / (DEM_N - 1);
-            const y0 = Math.min(DEM_N - 2, Math.floor(fy)), ty = fy - y0;
+            const fy = oyTop + r * span / M;
+            const y0 = Math.floor(fy), ty = fy - y0;
             for (let c = 0; c < DEM_N; c++) {
-                const fx = ox + c * span / (DEM_N - 1);
-                const x0 = Math.min(DEM_N - 2, Math.floor(fx)), tx = fx - x0;
-                const a = parent[y0 * DEM_N + x0], b = parent[y0 * DEM_N + x0 + 1];
-                const cc = parent[(y0 + 1) * DEM_N + x0], d = parent[(y0 + 1) * DEM_N + x0 + 1];
-                // nodata(-32768 등)가 섞이면 보간하지 않고 최근접 값
-                const v = (a <= -30000 || b <= -30000 || cc <= -30000 || d <= -30000)
-                    ? parent[Math.round(fy) * DEM_N + Math.round(fx)]
-                    : (a * (1 - tx) + b * tx) * (1 - ty) + (cc * (1 - tx) + d * tx) * ty;
-                out[r * DEM_N + c] = v < 0 ? 0 : v;
+                const fx = ox + c * span / M;
+                const x0 = Math.floor(fx), tx = fx - x0;
+                let bad = false;
+                for (let j = -1; j <= 2; j++) {
+                    const a = sample(x0 - 1, y0 + j), b = sample(x0, y0 + j), cc = sample(x0 + 1, y0 + j), d = sample(x0 + 2, y0 + j);
+                    if (a <= -30000 || b <= -30000 || cc <= -30000 || d <= -30000) { bad = true; break; }
+                    col[j + 1] = cubic(a, b, cc, d, tx);
+                }
+                let v = bad ? sample(Math.round(fx), Math.round(fy)) : cubic(col[0], col[1], col[2], col[3], ty);
+                if (clampNegative && v < 0) v = 0;
+                out[r * DEM_N + c] = v;
             }
         }
         return zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
@@ -637,14 +675,16 @@ function ensureLocalFileServer() {
                     return res.end(m ? 'Unknown terrain source' : 'Bad terrain tile path');
                 }
                 const L = Number(m[2]), idy = Number(m[3]), idx = Number(m[4]);
-                // 데이터의 최대 레벨을 넘는 요청은 상위 타일로 만들어내지 않는다(없는 상세를 지어내지 않음). 엔진이 상위 레벨로 대체.
+                // 데이터 최대 레벨 위 DEM_UPSAMPLE_LEVELS 레벨까지는 3차 보간으로 촘촘한 메시를 만들어 주고(부드러운 음영),
+                // 그 위는 404 → 엔진이 마지막 레벨을 유지. 최대 레벨 안의 빠진 타일은 음수를 0으로 눌러 메운다(cop30 바다).
                 const maxL = src.db.info.maxL;
-                if (Number.isFinite(maxL) && L > maxL) {
-                    if (process.env.XDREQ_DEBUG) console.log(`[srv] 404 xddem ${m[1]}/${L}/${idy}/${idx} (> maxL ${maxL})`);
+                const beyond = Number.isFinite(maxL) && L > maxL;
+                if (beyond && L > maxL + DEM_UPSAMPLE_LEVELS) {
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] 404 xddem ${m[1]}/${L}/${idy}/${idx} (> maxL ${maxL}+${DEM_UPSAMPLE_LEVELS})`);
                     res.writeHead(404);
                     return res.end('Beyond max level');
                 }
-                let blob = src.db.getTile(L, idx, idy);
+                let blob = beyond ? null : src.db.getTile(L, idx, idy);
                 let synthesized = false;
                 if (!blob) {
                     // 없는 타일은 상위 레벨에서 만들어 준다 (결과는 null 포함 캐시)
@@ -652,7 +692,7 @@ function ensureLocalFileServer() {
                     if (src.cache.has(key)) {
                         blob = src.cache.get(key);
                     } else {
-                        blob = synthesizeDemTile(src, L, idx, idy);
+                        blob = synthesizeDemTile(src, L, idx, idy, 6, !beyond);
                         if (src.cache.size >= 512) src.cache.delete(src.cache.keys().next().value);
                         src.cache.set(key, blob);
                     }
