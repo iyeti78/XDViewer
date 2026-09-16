@@ -1080,6 +1080,13 @@ ipcMain.handle('register-image-source', async (event, opts) => {
     return { id, url, levels: opts.kind === 'cesium' ? xdLevelsForSource(opts.srcMaxLv) : null, info };
 });
 
+// 모든 타일 소스 캐시 비우기 (새로고침 버튼: 엔진 XDEPlanetRefresh 전에 호출해 현재 설정으로 타일을 다시 만들게)
+ipcMain.handle('clear-tile-caches', () => {
+    let n = 0;
+    for (const src of imageSources.values()) { n += src.cache.size; src.cache.clear(); }
+    return n;
+});
+
 // 지형 메시 업샘플 레벨 수 (0 = 끔). 지형 소스 캐시를 비우고, 렌더러가 XDEPlanetRefresh로 다시 받는다
 ipcMain.handle('set-dem-upsample', (event, levels) => {
     demUpsampleLevels = Math.max(0, Math.min(6, parseInt(levels, 10) || 0));
