@@ -361,6 +361,12 @@
                             <input type="checkbox" id="demSmoothToggle" checked>
                             <span>DEM 메시 부드럽게 (3차 보간 업샘플)</span>
                         </label>
+                        <!-- 타일 LOD 비율: Module.getMap().setTerrLODRatio. 올리면 같은 거리에서 더 상세한 레벨의 지형·영상 타일을 요청(타일 수 증가) -->
+                        <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="타일 LOD 비율(엔진 setTerrLODRatio). 올리면 같은 거리에서 한두 레벨 더 상세한 타일을 가져와 메시·영상이 촘촘해짐. 타일 요청 수가 늘어 느려질 수 있음">
+                            <span class="settings-label" style="margin:0; min-width:48px;">타일 비율</span>
+                            <input type="range" id="tileRatioSlider" min="1" max="4" step="0.5" value="1" style="flex:1;">
+                            <span id="tileRatioText" style="color:#cccccc; font-size:11px; min-width:34px; text-align:right;">1.0×</span>
+                        </div>
                         <div style="display:flex; align-items:center; gap:6px; margin-top:10px;" title="드롭한 지형(DEM)의 높이를 몇 배로 과장할지. 해저 골짜기나 산의 계곡이 잘 보이게. 기본 지형에는 적용되지 않음">
                             <span class="settings-label" style="margin:0; min-width:48px;">DEM 배율</span>
                             <input type="range" id="demRateSlider" min="1" max="10" step="0.5" value="1" style="flex:1;">
@@ -1824,6 +1830,27 @@
                 }
                 return scale;
             }
+            // 타일 LOD 비율 (엔진 Module.getMap().setTerrLODRatio, getter 없음). 실측: 2면 같은 카메라에서 레벨 11~12 타일이 2배 이상 요청됨
+            const tileRatioSlider = document.getElementById('tileRatioSlider');
+            const tileRatioText = document.getElementById('tileRatioText');
+            let currentTileRatio = 1;
+            function applyTileRatio(ratio) {
+                ratio = Math.max(0.5, Math.min(8, Number(ratio) || 1));
+                currentTileRatio = ratio;
+                Module.getMap().setTerrLODRatio(ratio);
+                Module.XDEPlanetRefresh();
+                Module.XDRenderData();
+                tileRatioText.textContent = ratio.toFixed(1) + '×';
+                if (Number(tileRatioSlider.value) !== ratio) tileRatioSlider.value = Math.min(Number(tileRatioSlider.max), Math.max(Number(tileRatioSlider.min), ratio));
+                return ratio;
+            }
+            let tileRatioTimer = null;
+            tileRatioSlider.addEventListener('input', () => {
+                tileRatioText.textContent = Number(tileRatioSlider.value).toFixed(1) + '×';
+                clearTimeout(tileRatioTimer);
+                tileRatioTimer = setTimeout(() => applyTileRatio(tileRatioSlider.value), 250);
+            });
+
             // DEM 메시 업샘플 켜기/끄기 (서버 set-dem-upsample → 지형 재요청)
             const demSmoothToggle = document.getElementById('demSmoothToggle');
             async function applyDemSmooth(on) {
@@ -1869,6 +1896,10 @@
                     radio.checked = true;
                     radio.dispatchEvent(new Event('change', { bubbles: true }));
                     return 'terrain normal';
+                },
+                // 타일 LOD 비율 (엔진 setTerrLODRatio). 슬라이더 1~4, 콘솔 0.5~8
+                tileRatio(ratio = 1) {
+                    return 'tile LOD ratio ' + applyTileRatio(ratio) + '×';
                 },
                 // DEM 메시 업샘플(3차 보간) 켜기/끄기
                 async demSmooth(on = true) {
