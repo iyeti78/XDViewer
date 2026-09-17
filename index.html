@@ -1433,9 +1433,14 @@
             (() => {
                 const sel = document.getElementById('engineVersionSelect');
                 const grp = document.getElementById('engineVersionOld');
-                XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; grp.appendChild(o); });
+                XD_ENGINE_VERSIONS.forEach(v => {
+                    const o = document.createElement('option'); o.value = v;
+                    o.textContent = XD_WORKER_VERSIONS.includes(v) ? `${v}  (전용 워커)` : `${v}  (워커 없음 → 기본 워커)`;
+                    grp.appendChild(o);
+                });
                 sel.value = XD_ENGINE_VERSION;
-                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION})`;
+                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION}, 워커 ${XD_WORKER_VERSIONS.includes(XD_ENGINE_VERSION) ? XD_ENGINE_VERSION : '기본'})`;
+                sel.title = '엔진 버전과 워커(XDWorldWorker.js/.wasm)는 짝이 맞아야 합니다. 버전별 워커는 worker/<버전>/ 폴더에 두면 자동으로 쓰입니다. 없는 버전은 기본 워커로 동작하며 맞지 않을 수 있습니다.';
                 sel.addEventListener('change', () => {
                     const v = sel.value;
                     if (v === XD_ENGINE_VERSION) return;
@@ -3965,6 +3970,11 @@
             } catch (e) { /* 저장소 없음 */ }
             return 'latest';
         })();
+        // 워커(XDWorldWorker.js/.wasm)는 CDN에 없고(전 버전 404) 엔진이 new Worker(url)로 같은 출처에서만 만든다 → 로컬 파일.
+        // 엔진 버전과 워커 버전이 맞아야 하므로 worker/<버전>/ 폴더가 있으면 그것을, 없으면 기본 worker/(최신용)를 쓴다.
+        const XD_APP_DIR = decodeURIComponent(location.pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\/[^/]*$/, '');
+        const XD_WORKER_VERSIONS = (() => { try { return window.electronAPI.listDir(XD_APP_DIR + '/worker').filter(n => /^\d+\.\d+\.\d+$/.test(n) && window.electronAPI.pathExists(`${XD_APP_DIR}/worker/${n}/XDWorldWorker.js`)); } catch (e) { return []; } })();
+        const XD_WORKER_PATH = XD_WORKER_VERSIONS.includes(XD_ENGINE_VERSION) ? `./worker/${XD_ENGINE_VERSION}/XDWorldWorker.js` : './worker/XDWorldWorker.js';
 
         // XDWorld 모듈 설정
         var Module = {
@@ -3990,7 +4000,7 @@
                     },
                     worker: {
                         use: true, // 워커 사용 여부
-                        path: "./worker/XDWorldWorker.js", // 워커 파일 경로
+                        path: XD_WORKER_PATH, // 워커 파일 경로 (엔진 버전별 worker/<버전>/ 우선, 없으면 기본)
                         count: 5 // 워커 수
                     },
                     defaultKey: "eza2eBBqd!Hmd!JQ45QpEpB~#Fb!EQBmeFDP4FEPDzb1dFg21I==",
