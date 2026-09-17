@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, session, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session, nativeImage, net } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const http = require('http');
 const path = require('path');
@@ -1105,6 +1105,70 @@ ipcMain.handle('get-app-version', () => {
 });
 
 // 로컬 파일을 HTTP URL로 변환 (디렉토리 구조 유지하여 텍스처 상대경로 해결)
+// ============ XDWorld 워커 (엔진 버전과 짝을 맞춘다) ============
+//
+// 워커(XDWorldWorker.js + .wasm)는 CDN에 없고(전 버전 404) 사이트마다 사본을 둔다. 빌드도 버전마다 다르다
+// (샌드박스 stable용 wasm 1.29MB vs 저장소 번들 0.2MB 실측). 엔진이 `new Worker(url)`로 만들기 때문에
+// http로는 못 주고 file: 경로여야 한다 → 버전별 워커를 받아 userData에 캐시하고 그 절대 경로를 넘긴다.
+//
+// 찾는 순서: 앱 폴더 `worker/<버전>/` → userData 캐시 → 원격 URL(`{version}` 치환) → 번들 `worker/`
+const WORKER_FILES = ['XDWorldWorker.js', 'XDWorldWorker.wasm'];
+const workerCacheDir = (version) => path.join(app.getPath('userData'), 'workers', version);
+const hasWorker = (dir) => WORKER_FILES.every(f => { try { return fs.statSync(path.join(dir, f)).size > 0; } catch (_) { return false; } });
+const workerFileUrl = (dir) => 'file:///' + path.join(dir, WORKER_FILES[0]).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+
+async function downloadWorker(version, urlTemplate) {
+    const dir = workerCacheDir(version);
+    const tmp = dir + '.tmp';
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp, { recursive: true });
+    for (const name of WORKER_FILES) {
+        const url = urlTemplate.replace(/\{version\}/g, version).replace(/XDWorldWorker\.js$/, name);
+        // Chromium 네트워크 스택(net.fetch)을 쓴다: Node fetch는 중간 인증서가 빠진 사이트에서
+        // UNABLE_TO_VERIFY_LEAF_SIGNATURE로 실패하지만(샌드박스 실측) 브라우저는 AIA로 받아와 통과한다.
+        const r = await net.fetch(url, { headers: { 'User-Agent': 'XDViewer' } });
+        if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length < 1000) throw new Error(`${name}: 응답이 너무 작습니다(${buf.length}B)`);
+        fs.writeFileSync(path.join(tmp, name), buf);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.renameSync(tmp, dir);
+    return dir;
+}
+
+// 선택한 엔진 버전에 맞는 워커 경로를 돌려준다. { path, source, version, error? }
+ipcMain.handle('ensure-worker', async (event, version, urlTemplate) => {
+    const bundled = path.join(__dirname, 'worker');
+    const local = path.join(bundled, String(version));
+    if (hasWorker(local)) return { path: workerFileUrl(local), source: 'local', version };
+
+    const cached = workerCacheDir(version);
+    if (hasWorker(cached)) return { path: workerFileUrl(cached), source: 'cache', version };
+
+    if (urlTemplate) {
+        try {
+            const dir = await downloadWorker(version, urlTemplate);
+            console.log(`[worker] ${version} 내려받음 -> ${dir}`);
+            return { path: workerFileUrl(dir), source: 'remote', version };
+        } catch (e) {
+            console.warn(`[worker] ${version} 내려받기 실패: ${e.message}`);
+            return { path: './worker/XDWorldWorker.js', source: 'bundled', version, error: e.message };
+        }
+    }
+    return { path: './worker/XDWorldWorker.js', source: 'bundled', version };
+});
+
+// 캐시된 워커 버전 목록 / 캐시 비우기 (설정 패널 표시용)
+ipcMain.handle('list-cached-workers', () => {
+    const root = path.join(app.getPath('userData'), 'workers');
+    try { return fs.readdirSync(root).filter(v => hasWorker(path.join(root, v))); } catch (_) { return []; }
+});
+ipcMain.handle('clear-worker-cache', () => {
+    const root = path.join(app.getPath('userData'), 'workers');
+    try { fs.rmSync(root, { recursive: true, force: true }); return true; } catch (_) { return false; }
+});
+
 // 전체화면 토글 (오른쪽 아래 버튼 / F11)
 ipcMain.handle('toggle-fullscreen', () => {
     if (!mainWindow) return false;

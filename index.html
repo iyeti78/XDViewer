@@ -217,6 +217,15 @@
                             <option value="stable">stable</option>
                             <optgroup label="과거 버전" id="engineVersionOld"></optgroup>
                         </select>
+                        <div class="settings-label" style="margin-top:8px;">워커 <span id="workerStatus" style="color:#858585;"></span></div>
+                        <!-- 워커는 엔진과 짝이어야 한다. {version}이 있으면 버전별로 받는다. 비우면 번들 워커 -->
+                        <input type="text" id="workerSourceInput" class="settings-select" style="width:100%; font-size:11px;"
+                            placeholder="워커 URL (빈칸이면 번들). {version} 치환 가능"
+                            title="예) https://사내서버/xdworld/{version}/XDWorldWorker.js — .wasm은 같은 폴더에서 자동으로 받습니다">
+                        <div style="display:flex; gap:4px; margin-top:4px;">
+                            <button id="workerSourceApply" class="settings-select" style="flex:1; cursor:pointer; font-size:11px;">적용 후 다시 불러오기</button>
+                            <button id="workerCacheClear" class="settings-select" style="cursor:pointer; font-size:11px;" title="내려받은 워커 캐시를 모두 지웁니다">캐시 비우기</button>
+                        </div>
                     </div>
                     <div class="settings-section">
                         <div class="settings-label">배경지도</div>
@@ -1433,14 +1442,33 @@
             (() => {
                 const sel = document.getElementById('engineVersionSelect');
                 const grp = document.getElementById('engineVersionOld');
-                XD_ENGINE_VERSIONS.forEach(v => {
-                    const o = document.createElement('option'); o.value = v;
-                    o.textContent = XD_WORKER_VERSIONS.includes(v) ? `${v}  (전용 워커)` : `${v}  (워커 없음 → 기본 워커)`;
-                    grp.appendChild(o);
-                });
+                XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; grp.appendChild(o); });
                 sel.value = XD_ENGINE_VERSION;
-                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION}, 워커 ${XD_WORKER_VERSIONS.includes(XD_ENGINE_VERSION) ? XD_ENGINE_VERSION : '기본'})`;
-                sel.title = '엔진 버전과 워커(XDWorldWorker.js/.wasm)는 짝이 맞아야 합니다. 버전별 워커는 worker/<버전>/ 폴더에 두면 자동으로 쓰입니다. 없는 버전은 기본 워커로 동작하며 맞지 않을 수 있습니다.';
+                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION})`;
+
+                // 워커 상태 표시 + 소스 URL
+                const SOURCE_LABEL = { local: '앱 폴더 worker/<버전>', cache: '내려받아 캐시됨', remote: '방금 내려받음', bundled: '번들(버전 무관)' };
+                const wStatus = document.getElementById('workerStatus');
+                const wInput = document.getElementById('workerSourceInput');
+                wInput.value = XD_WORKER_SOURCE;
+                const refreshWorkerStatus = async () => {
+                    await XD_WORKER_READY;   // 워커 준비(비동기)가 끝난 뒤의 실제 상태를 보여준다
+                    const cached = await window.electronAPI.listCachedWorkers();
+                    const mismatch = XD_WORKER_INFO.source === 'bundled';
+                    wStatus.textContent = `(${SOURCE_LABEL[XD_WORKER_INFO.source] || XD_WORKER_INFO.source}${XD_WORKER_INFO.error ? ' — ' + XD_WORKER_INFO.error : ''}${cached.length ? `, 캐시 ${cached.join(', ')}` : ''})`;
+                    wStatus.style.color = mismatch ? '#e0a030' : '#858585';
+                    wStatus.title = mismatch ? '엔진 버전에 맞는 워커가 없어 번들 워커를 씁니다. 버전별 워커 URL을 넣거나 worker/<버전>/ 폴더에 두세요.' : '';
+                };
+                refreshWorkerStatus();
+                document.getElementById('workerSourceApply').addEventListener('click', () => {
+                    try { localStorage.setItem('xdv.workerSource', wInput.value.trim()); } catch (e) { /* 무시 */ }
+                    location.reload();
+                });
+                document.getElementById('workerCacheClear').addEventListener('click', async () => {
+                    await window.electronAPI.clearWorkerCache();
+                    refreshWorkerStatus();
+                    alert('워커 캐시를 비웠습니다. 다시 불러오면 새로 내려받습니다.');
+                });
                 sel.addEventListener('change', () => {
                     const v = sel.value;
                     if (v === XD_ENGINE_VERSION) return;
@@ -3970,11 +3998,15 @@
             } catch (e) { /* 저장소 없음 */ }
             return 'latest';
         })();
-        // 워커(XDWorldWorker.js/.wasm)는 CDN에 없고(전 버전 404) 엔진이 new Worker(url)로 같은 출처에서만 만든다 → 로컬 파일.
-        // 엔진 버전과 워커 버전이 맞아야 하므로 worker/<버전>/ 폴더가 있으면 그것을, 없으면 기본 worker/(최신용)를 쓴다.
-        const XD_APP_DIR = decodeURIComponent(location.pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\/[^/]*$/, '');
-        const XD_WORKER_VERSIONS = (() => { try { return window.electronAPI.listDir(XD_APP_DIR + '/worker').filter(n => /^\d+\.\d+\.\d+$/.test(n) && window.electronAPI.pathExists(`${XD_APP_DIR}/worker/${n}/XDWorldWorker.js`)); } catch (e) { return []; } })();
-        const XD_WORKER_PATH = XD_WORKER_VERSIONS.includes(XD_ENGINE_VERSION) ? `./worker/${XD_ENGINE_VERSION}/XDWorldWorker.js` : './worker/XDWorldWorker.js';
+        // 워커(XDWorldWorker.js/.wasm)는 CDN에 없고 사이트마다 사본을 둔다. 빌드가 버전마다 달라(샌드박스 1.29MB vs 번들 0.2MB)
+        // 엔진 버전과 짝을 맞춰야 한다. 메인이 앱 폴더 worker/<버전>/ → userData 캐시 → 원격({version} 치환) → 번들 순으로 찾아 준다.
+        const XD_WORKER_SOURCE_DEFAULT = 'https://sandbox.egiscloud.com/assets/map/worker/XDWorldWorker.js';
+        const XD_WORKER_SOURCE = (() => {
+            try { const v = localStorage.getItem('xdv.workerSource'); if (v !== null) return v; } catch (e) { /* 저장소 없음 */ }
+            return XD_WORKER_SOURCE_DEFAULT;
+        })();
+        let XD_WORKER_PATH = './worker/XDWorldWorker.js';   // 엔진 로드 직전에 확정
+        let XD_WORKER_INFO = { source: 'bundled', version: XD_ENGINE_VERSION };
 
         // XDWorld 모듈 설정
         var Module = {
@@ -4025,10 +4057,19 @@
             }
         };
 
-        // XDWorld 스크립트 동적 로드
-        var script = document.createElement('script');
-        script.src = "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/XDWorldEM.js";
-        document.body.appendChild(script);
+        // XDWorld 스크립트 동적 로드. 워커 경로를 먼저 확정해야 postRun의 Module.initialize가 맞는 워커를 쓴다.
+        const XD_WORKER_READY = (async () => {
+            try {
+                const w = await window.electronAPI.ensureWorker(XD_ENGINE_VERSION, XD_WORKER_SOURCE);
+                if (w && w.path) { XD_WORKER_PATH = w.path; XD_WORKER_INFO = w; }
+                console.log(`워커: ${XD_WORKER_INFO.source} (${XD_ENGINE_VERSION})${XD_WORKER_INFO.error ? ' — ' + XD_WORKER_INFO.error : ''}\n${XD_WORKER_PATH}`);
+            } catch (e) {
+                console.warn('워커 준비 실패, 번들 워커 사용:', e.message);
+            }
+            const script = document.createElement('script');
+            script.src = "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/XDWorldEM.js";
+            document.body.appendChild(script);
+        })();
 
         function createPointObjects(layer, features, altitude, color, customIconUrl, pointSize = 10) {
             var layerName = layer.getName();
