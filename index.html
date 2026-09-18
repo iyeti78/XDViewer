@@ -1052,6 +1052,94 @@
             }
         }
 
+        // ============ 3D Tiles를 지형에 앉히기 ============
+        //
+        // tileset.json의 root.boundingVolume에서 타일셋이 놓인 위치와 **바닥 높이**를 구하고,
+        // 같은 지점의 지형 높이를 빼서 `setTileHeightOffset`에 줄 값을 만든다.
+        //   region : [west, south, east, north, minH, maxH] (경위도 라디안, 높이 m) → 그대로 사용
+        //   box    : [중심 xyz, 반축3개] — root.transform의 이동분(ECEF)을 경위도로 풀고 z 반축으로 바닥 추정
+        //   sphere : [중심 xyz, 반지름]
+        // 엔진 높이(getTerrHeight)와 3D Tiles 높이는 둘 다 WGS84 타원체 기준이라 그대로 뺄 수 있다.
+        const WGS84_A = 6378137.0, WGS84_F = 1 / 298.257223563;
+
+        /** ECEF(m) → {lon, lat, height} (Bowring 방법) */
+        function ecefToLonLatHeight(x, y, z) {
+            const b = WGS84_A * (1 - WGS84_F);
+            const e2 = WGS84_F * (2 - WGS84_F);
+            const ep2 = (WGS84_A * WGS84_A - b * b) / (b * b);
+            const p = Math.hypot(x, y);
+            const th = Math.atan2(WGS84_A * z, b * p);
+            const lat = Math.atan2(z + ep2 * b * Math.sin(th) ** 3, p - e2 * WGS84_A * Math.cos(th) ** 3);
+            const lon = Math.atan2(y, x);
+            const N = WGS84_A / Math.sqrt(1 - e2 * Math.sin(lat) ** 2);
+            const height = p / Math.cos(lat) - N;
+            return { lon: lon * 180 / Math.PI, lat: lat * 180 / Math.PI, height };
+        }
+
+        /** tileset.json(JSON 객체) → { lon, lat, minH, maxH } (못 구하면 null) */
+        function tilesetFootprint(json) {
+            const root = json && json.root;
+            const bv = root && root.boundingVolume;
+            if (!bv) return null;
+            const deg = (r) => r * 180 / Math.PI;
+
+            if (bv.region && bv.region.length >= 6) {
+                const [w, s, e, n, minH, maxH] = bv.region;
+                return { lon: deg((w + e) / 2), lat: deg((s + n) / 2), minH, maxH };
+            }
+
+            // box/sphere는 root.transform(열 우선 4x4)의 이동분이 ECEF 원점
+            const t = root.transform;
+            const center = bv.box ? bv.box.slice(0, 3) : (bv.sphere ? bv.sphere.slice(0, 3) : null);
+            if (!center) return null;
+            let x = center[0], y = center[1], z = center[2];
+            if (t && t.length === 16) {
+                // [m0..m15] 열 우선: 이동분은 m12,m13,m14. 중심에 회전·이동 적용
+                x = t[0] * center[0] + t[4] * center[1] + t[8] * center[2] + t[12];
+                y = t[1] * center[0] + t[5] * center[1] + t[9] * center[2] + t[13];
+                z = t[2] * center[0] + t[6] * center[1] + t[10] * center[2] + t[14];
+            }
+            const c = ecefToLonLatHeight(x, y, z);
+            // 높이 반폭: box는 세 반축의 z성분 합(로컬 z가 위가 아닐 수 있어 절대값 합), sphere는 반지름
+            let half = 0;
+            if (bv.box && bv.box.length >= 12) half = Math.abs(bv.box[5]) + Math.abs(bv.box[8]) + Math.abs(bv.box[11]);
+            else if (bv.sphere && bv.sphere.length >= 4) half = bv.sphere[3];
+            return { lon: c.lon, lat: c.lat, minH: c.height - half, maxH: c.height + half };
+        }
+
+        /** 지형 높이(여러 점 중앙값). 타일이 아직 안 온 지점은 0이 나올 수 있어 주변도 본다 */
+        function terrainHeightAround(lon, lat) {
+            const d = 0.0008;   // 약 90m
+            const pts = [[lon, lat], [lon + d, lat], [lon - d, lat], [lon, lat + d], [lon, lat - d]];
+            const hs = pts.map(([x, y]) => { try { return Module.getMap().getTerrHeight(x, y); } catch (e) { return NaN; } })
+                .filter(v => Number.isFinite(v));
+            if (!hs.length) return null;
+            hs.sort((a, b) => a - b);
+            return hs[hs.length >> 1];
+        }
+
+        /** tileset.json 읽기 (로컬 경로 / http URL 모두) */
+        async function readTilesetJson(src) {
+            if (/^https?:\/\//i.test(src)) return JSON.parse(await window.electronAPI.fetchText(src));
+            return window.electronAPI.readJsonFile(src);
+        }
+
+        /** 저장해 둔 카메라 위치로 이동 (없으면 아무것도 하지 않음) */
+        function restoreCameraPosition() {
+            try {
+                const raw = localStorage.getItem('xdv.camera');
+                if (!raw) return false;
+                const c = JSON.parse(raw);
+                if (!Number.isFinite(c.lon) || !Number.isFinite(c.lat) || !Number.isFinite(c.alt)) return false;
+                Module.getViewCamera().move(new Module.JSVector3D(c.lon, c.lat, c.alt), c.tilt ?? 89.9, c.dir ?? 0, 0);
+                console.log(`마지막 위치 복원: ${c.lon.toFixed(4)}, ${c.lat.toFixed(4)}, ${c.alt}m`);
+                return true;
+            } catch (e) {
+                console.warn('카메라 위치 복원 실패:', e.message);
+                return false;
+            }
+        }
+
         function buildContextMenu(layerData) {
             const menu = document.getElementById('contextMenu');
             menu.innerHTML = '';
@@ -1385,10 +1473,66 @@
                     pc.pointSize = v;
                     try { L.setPointCloudPointSize(v); } catch (e) { console.warn('포인트 크기 설정 실패:', e.message); }
                 }));
-                body.appendChild(numRow('고도 offset', -500, 500, 1, pc.heightOffset, v => {
+                // 설정을 바꾼 뒤 눈에 안 보이면 쓰는 수동 갱신
+                const reloadRow = document.createElement('div');
+                reloadRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                const reloadBtn = document.createElement('button');
+                reloadBtn.textContent = '타일 다시 읽기';
+                reloadBtn.className = 'settings-select';
+                reloadBtn.style.cssText = 'flex:0 0 auto; cursor:pointer; font-size:11px; padding:3px 8px;';
+                reloadBtn.title = '설정이 화면에 바로 안 보일 때 타일을 다시 읽습니다';
+                reloadBtn.onclick = () => { try { L.reloadTiles(); Module.XDRenderData(); } catch (e) { console.warn('타일 갱신 실패:', e.message); } };
+                reloadRow.appendChild(reloadBtn);
+                // setTileHeightOffset만으로는 이미 만들어진 타일이 그대로라 화면이 안 바뀐다 → reloadTiles로 다시 그린다(실측).
+                // 슬라이더를 끄는 동안 매번 다시 읽으면 무거우니 250ms 쉬면 적용.
+                let reloadTimer = null;
+                const applyHeight = (v) => {
                     pc.heightOffset = v;
-                    try { L.setTileHeightOffset(v); } catch (e) { console.warn('고도 설정 실패:', e.message); }
-                }, 'm'));
+                    try {
+                        L.setTileHeightOffset(v);
+                        clearTimeout(reloadTimer);
+                        reloadTimer = setTimeout(() => { try { L.reloadTiles(); Module.XDRenderData(); } catch (e) { console.warn('타일 갱신 실패:', e.message); } }, 250);
+                    } catch (e) { console.warn('고도 설정 실패:', e.message); }
+                };
+                const heightRow = numRow('고도 offset', -500, 500, 1, pc.heightOffset, applyHeight, 'm');
+                body.appendChild(heightRow);
+
+                // 지형에 맞추기: 타일셋 바닥 높이와 그 지점 지형 높이의 차이를 offset으로
+                const fitRow = document.createElement('div');
+                fitRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                const fitBtn = document.createElement('button');
+                fitBtn.textContent = '지형에 맞추기';
+                fitBtn.className = 'settings-select';
+                fitBtn.style.cssText = 'flex:0 0 auto; cursor:pointer; font-size:11px; padding:3px 8px;';
+                const fitMsg = document.createElement('span');
+                fitMsg.style.cssText = 'font-size:11px; color:#888; flex:1;';
+                fitMsg.textContent = layerData.tilesetPath ? '' : 'tileset 경로를 몰라 사용할 수 없습니다';
+                fitBtn.disabled = !layerData.tilesetPath;
+                fitBtn.onclick = async () => {
+                    fitBtn.disabled = true; fitMsg.textContent = '계산 중…';
+                    try {
+                        const json = await readTilesetJson(layerData.tilesetPath);
+                        const fp = tilesetFootprint(json);
+                        if (!fp) { fitMsg.textContent = 'tileset.json에서 위치를 찾지 못했습니다'; return; }
+                        const ground = terrainHeightAround(fp.lon, fp.lat);
+                        if (ground === null) { fitMsg.textContent = '지형 높이를 읽지 못했습니다'; return; }
+                        const offset = Math.round((ground - fp.minH) * 10) / 10;
+                        pc.heightOffset = offset;
+                        L.setTileHeightOffset(offset);
+                        try { L.reloadTiles(); } catch (e) { /* 무시 */ }
+                        Module.XDRenderData();
+                        const range = heightRow.querySelector('input[type=range]'), num = heightRow.querySelector('input[type=number]');
+                        range.value = Math.max(Number(range.min), Math.min(Number(range.max), offset));
+                        num.value = offset;
+                        fitMsg.textContent = `지형 ${Math.round(ground)}m − 바닥 ${Math.round(fp.minH)}m = ${offset}m`;
+                    } catch (e) {
+                        fitMsg.textContent = '실패: ' + (e.message || e);
+                    } finally {
+                        fitBtn.disabled = !layerData.tilesetPath;
+                    }
+                };
+                fitRow.append(fitBtn, fitMsg);
+                body.appendChild(fitRow);
 
                 // 색상 표현 방식
                 const modeRow = document.createElement('div');
@@ -1428,6 +1572,7 @@
                 interpText.textContent = '점 보간 (촘촘하게)';
                 interpRow.append(interp, interpText);
                 body.appendChild(interpRow);
+                body.appendChild(reloadRow);
 
                 menu.appendChild(head);
                 menu.appendChild(body);
@@ -1608,6 +1753,8 @@
             window.XDV = Object.assign(window.XDV || {}, { refresh: refreshPlanet });
 
             document.getElementById('btnResetView').addEventListener('click', () => {
+                try { localStorage.removeItem('xdv.camera'); } catch (e) { /* 무시 */ }
+                lastCamStr = '';
                 Module.getViewCamera().move(new Module.JSVector3D(126.9, 37.5, 19000000), 89.9, 0, 0);
             });
 
@@ -1627,6 +1774,22 @@
             const CAMERA_MAX_ALTITUDE = 50000000; // m
             // 해수면 아래(수심 DEM 위) 카메라: 엔진 휠 줌인은 지표 픽킹 지점을 향해 다가가는데 음수 고도에선 픽킹이 실패해
             // 카메라가 지구 반대편(-4,700km)으로 튄다(실측). 그래서 고도가 0 아래면 휠을 가로채 우리가 지형까지 거리 비례로 다가간다.
+            // ---- 마지막으로 보던 위치 기억 ----
+            // rAF에서 2초마다(그리고 실제로 움직였을 때만) localStorage에 남기고, 다음 실행 때 그 자리에서 시작한다.
+            const CAMERA_STORE_KEY = 'xdv.camera';
+            let lastCamSave = 0, lastCamStr = '';
+            function saveCameraPosition(pos, tilt, dir) {
+                const now = performance.now();
+                if (now - lastCamSave < 2000) return;
+                lastCamSave = now;
+                if (!Number.isFinite(pos.Altitude) || pos.Altitude <= 0) return;   // 수중·비정상 위치는 저장하지 않음
+                const cam = { lon: +pos.Longitude.toFixed(7), lat: +pos.Latitude.toFixed(7), alt: Math.round(pos.Altitude), tilt: +tilt.toFixed(2), dir: +dir.toFixed(2) };
+                const str = JSON.stringify(cam);
+                if (str === lastCamStr) return;
+                lastCamStr = str;
+                try { localStorage.setItem(CAMERA_STORE_KEY, str); } catch (e) { /* 저장소 없음 */ }
+            }
+
             const CAMERA_MIN_ALTITUDE = -12000;   // 지구 최심(-11,000m)보다 아래면 비정상
             const CAMERA_GROUND_MARGIN = 30;      // 지형 위 최소 여유(m)
             const terrainHeightAt = (lon, lat) => {
@@ -1660,7 +1823,7 @@
             }, { capture: true, passive: false });
             let lastGoodCam = null;   // 정상 범위였던 마지막 카메라 {lon, lat, alt, tilt, dir}
 
-            // 카메라 방향에 따라 나침반 아이콘 회전 (+ 고도 상한 되돌림)
+            // 카메라 방향에 따라 나침반 아이콘 회전 (+ 고도 상한 되돌림, 마지막 위치 저장)
             (function updateCompass() {
                 try {
                     const camera = Module.getViewCamera();
@@ -1675,6 +1838,7 @@
                     } else {
                         lastGoodCam = { lon: pos.Longitude, lat: pos.Latitude, alt: pos.Altitude, tilt, dir };
                     }
+                    saveCameraPosition(pos, tilt, dir);
                     northIcon.style.transform = 'rotate(' + (-dir) + 'deg)';
                     // tilt 90°(수직) → y=2(상단), tilt 0°(수평) → y=10(중앙)
                     const y = Math.max(2, Math.min(18, 10 - (tilt / 90) * 8));
@@ -3466,6 +3630,7 @@
                         label: label,
                         removeBtn: removeBtn,
                         fileName: parentFolder,
+                        tilesetPath: filePath,   // '지형에 맞추기'가 boundingVolume을 읽는다
                         pc: layerItem._pc
                     };
                     window.currentContextLayer = layerData;
@@ -4167,6 +4332,9 @@
                 // SQLite 및 하단 패널 초기화
                 initSqlite();
                 initBottomPanel();
+
+                // 마지막으로 보던 위치 복원 (초기화 버튼은 기본 위치로 되돌린다)
+                restoreCameraPosition();
 
                 // 엔진 준비 완료 - 더블클릭으로 대기 중인 파일 로딩
                 flushPendingFilePaths();
