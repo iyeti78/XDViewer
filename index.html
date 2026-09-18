@@ -212,11 +212,10 @@
                     <div class="settings-section">
                         <div class="settings-label">엔진 버전 <span id="engineVersionNow" style="color:#858585;"></span></div>
                         <!-- cdn.xdworld.kr/<버전>/XDWorldEM.js. 바꾸면 앱을 다시 불러온다(엔진 교체는 리로드가 필수) -->
-                        <select id="engineVersionSelect" class="settings-select" title="XDWorld 엔진 버전. 변경하면 앱이 다시 로딩됩니다">
-                            <option value="latest">latest (최신)</option>
-                            <option value="stable">stable</option>
-                            <optgroup label="과거 버전" id="engineVersionOld"></optgroup>
+                        <select id="engineVersionSelect" class="settings-select" title="XDWorld 공식 배포 버전(github.com/EgisCorp/XDWorld). 엔진과 워커를 같은 버전으로 씁니다. 변경하면 앱이 다시 로딩됩니다">
+                            <option value="latest">최신</option>
                         </select>
+                        <div id="engineNotes" style="display:none; margin-top:6px; max-height:120px; overflow:auto; background:#2a2a2a; border:1px solid #444; border-radius:4px; padding:6px 8px; font-size:11px; color:#bbb; line-height:1.5;"></div>
                         <div class="settings-label" style="margin-top:8px;">워커 <span id="workerStatus" style="color:#858585;"></span></div>
                         <!-- 워커는 엔진과 짝이어야 한다. {version}이 있으면 버전별로 받는다. 비우면 번들 워커 -->
                         <input type="text" id="workerSourceInput" class="settings-select" style="width:100%; font-size:11px;"
@@ -1438,16 +1437,29 @@
             }
             document.getElementById('btnReload').addEventListener('click', refreshPlanet);
 
-            // 엔진 버전 선택
-            (() => {
+            // 엔진 버전 선택 (공식 배포 목록을 기다렸다가 구성)
+            (async () => {
                 const sel = document.getElementById('engineVersionSelect');
-                const grp = document.getElementById('engineVersionOld');
-                XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; grp.appendChild(o); });
-                sel.value = XD_ENGINE_VERSION;
-                document.getElementById('engineVersionNow').textContent = `(현재 ${XD_ENGINE_VERSION})`;
+                await XD_WORKER_READY;   // 공식 버전 목록이 채워진 뒤에 UI를 만든다
+                XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+                sel.value = XD_ENGINE_CHOICE === 'latest' ? 'latest' : XD_ENGINE_VERSION;
+                document.getElementById('engineVersionNow').textContent = `(사용 중 ${XD_ENGINE_VERSION}${XD_ENGINE_CHOICE === 'latest' ? ', 최신' : ''})`;
+
+                // 선택한 버전의 공식 변경 내용 (README에서 추출)
+                const notesBox = document.getElementById('engineNotes');
+                const allNotes = await window.electronAPI.getReleaseNotes();
+                const showNotes = (v) => {
+                    const key = v === 'latest' ? XD_ENGINE_VERSIONS[0] : v;
+                    const n = allNotes && allNotes[key];
+                    if (!n) { notesBox.style.display = 'none'; return; }
+                    notesBox.style.display = 'block';
+                    notesBox.textContent = `${key}${n.date ? ' (' + n.date + ')' : ''}\n` + n.body.replace(/^[#>\s*-]+/gm, m => m.includes('#') ? '' : m);
+                };
+                showNotes(sel.value);
+                sel.addEventListener('change', () => showNotes(sel.value));
 
                 // 워커 상태 표시 + 소스 URL
-                const SOURCE_LABEL = { local: '앱 폴더 worker/<버전>', cache: '내려받아 캐시됨', remote: '방금 내려받음', bundled: '번들(버전 무관)' };
+                const SOURCE_LABEL = { local: '앱 폴더 worker/<버전>', cache: `캐시된 ${XD_ENGINE_VERSION} 워커`, remote: `${XD_ENGINE_VERSION} 워커 내려받음`, bundled: '번들(버전 안 맞음)' };
                 const wStatus = document.getElementById('workerStatus');
                 const wInput = document.getElementById('workerSourceInput');
                 wInput.value = XD_WORKER_SOURCE;
@@ -1471,8 +1483,9 @@
                 });
                 sel.addEventListener('change', () => {
                     const v = sel.value;
-                    if (v === XD_ENGINE_VERSION) return;
-                    if (!confirm(`엔진을 ${v}(으)로 바꾸려면 앱을 다시 불러와야 합니다. 열린 레이어는 닫힙니다.\n계속할까요?`)) { sel.value = XD_ENGINE_VERSION; return; }
+                    if (v === XD_ENGINE_CHOICE) return;
+                    const label = v === 'latest' ? `최신(${XD_ENGINE_VERSIONS[0]})` : v;
+                    if (!confirm(`엔진과 워커를 ${label}(으)로 바꾸려면 앱을 다시 불러와야 합니다. 열린 레이어는 닫힙니다.\n계속할까요?`)) { sel.value = XD_ENGINE_CHOICE === 'latest' ? 'latest' : XD_ENGINE_VERSION; return; }
                     try { localStorage.setItem('xdv.engineVersion', v); } catch (e) { /* 무시 */ }
                     location.reload();
                 });
@@ -3986,25 +3999,21 @@
             if (bottomPanelVisible) updateMapSize();
         };
 
-        // ============ 엔진 버전 (cdn.xdworld.kr/<버전>/) ============
-        // 설정 패널에서 고르고 localStorage에 저장. 엔진 교체는 페이지를 다시 불러와야 하므로 변경 시 location.reload().
-        // 목록은 CDN에서 실측한 존재 버전(2026-09). 새 버전이 나오면 여기에 추가.
-        const XD_ENGINE_VERSIONS = ['2.30.1', '2.30.0', '2.29.4', '2.29.3', '2.29.2', '2.29.1', '2.29.0', '2.28.3', '2.28.2', '2.28.1', '2.28.0',
-            '2.27.3', '2.27.2', '2.27.1', '2.27.0', '2.26.0', '2.25.1', '2.25.0', '2.24.1', '2.24.0', '2.23.0', '2.22.0', '2.21.0', '2.20.1', '2.20.0'];
-        const XD_ENGINE_VERSION = (() => {
-            try {
-                const v = localStorage.getItem('xdv.engineVersion');
-                if (v && (v === 'latest' || v === 'stable' || XD_ENGINE_VERSIONS.includes(v))) return v;
-            } catch (e) { /* 저장소 없음 */ }
-            return 'latest';
-        })();
-        // 워커(XDWorldWorker.js/.wasm)는 CDN에 없고 사이트마다 사본을 둔다. 빌드가 버전마다 달라(샌드박스 1.29MB vs 번들 0.2MB)
-        // 엔진 버전과 짝을 맞춰야 한다. 메인이 앱 폴더 worker/<버전>/ → userData 캐시 → 원격({version} 치환) → 번들 순으로 찾아 준다.
-        const XD_WORKER_SOURCE_DEFAULT = 'https://sandbox.egiscloud.com/assets/map/worker/XDWorldWorker.js';
+        // ============ 엔진 버전 (github.com/EgisCorp/XDWorld 공식 배포) ============
+        // 공식 저장소 `Release/<버전>/`에 engine과 worker가 세트로 올라오고, 같은 버전이 CDN에도 있다(파일 동일 확인).
+        // 워커는 엔진과 짝이어야 한다(공식 README: 2.29.3에서 worker 파일 변경). 그래서 목록을 공식 배포 버전으로 제한하고
+        // 엔진은 CDN에서, 워커는 GitHub raw에서 같은 버전으로 받는다. 저장은 localStorage, 변경 시 location.reload().
+        const XD_WORKER_SOURCE_DEFAULT = 'https://raw.githubusercontent.com/EgisCorp/XDWorld/main/Release/{version}/worker/XDWorldWorker.js';
         const XD_WORKER_SOURCE = (() => {
-            try { const v = localStorage.getItem('xdv.workerSource'); if (v !== null) return v; } catch (e) { /* 저장소 없음 */ }
+            try { const v = localStorage.getItem('xdv.workerSource'); if (v !== null && v !== '') return v; } catch (e) { /* 저장소 없음 */ }
             return XD_WORKER_SOURCE_DEFAULT;
         })();
+        const XD_ENGINE_CHOICE = (() => {   // 'latest' 또는 구체 버전
+            try { const v = localStorage.getItem('xdv.engineVersion'); if (v) return v; } catch (e) { /* 저장소 없음 */ }
+            return 'latest';
+        })();
+        let XD_ENGINE_VERSIONS = [];                 // 공식 배포 버전 목록(최신순), 로드 시 채움
+        let XD_ENGINE_VERSION = XD_ENGINE_CHOICE;    // 실제 사용 버전(‘latest’는 목록 최신으로 해석)
         let XD_WORKER_PATH = './worker/XDWorldWorker.js';   // 엔진 로드 직전에 확정
         let XD_WORKER_INFO = { source: 'bundled', version: XD_ENGINE_VERSION };
 
@@ -4060,11 +4069,17 @@
         // XDWorld 스크립트 동적 로드. 워커 경로를 먼저 확정해야 postRun의 Module.initialize가 맞는 워커를 쓴다.
         const XD_WORKER_READY = (async () => {
             try {
+                // 공식 배포 목록을 받아 'latest'를 실제 번호로 바꾼 뒤, 그 버전의 워커를 준비한다
+                const rel = await window.electronAPI.listEngineReleases();
+                XD_ENGINE_VERSIONS = (rel && rel.versions) || [];
+                if (XD_ENGINE_CHOICE === 'latest' || !XD_ENGINE_VERSIONS.includes(XD_ENGINE_CHOICE)) {
+                    XD_ENGINE_VERSION = XD_ENGINE_VERSIONS[0] || '2.30.1';
+                }
                 const w = await window.electronAPI.ensureWorker(XD_ENGINE_VERSION, XD_WORKER_SOURCE);
                 if (w && w.path) { XD_WORKER_PATH = w.path; XD_WORKER_INFO = w; }
-                console.log(`워커: ${XD_WORKER_INFO.source} (${XD_ENGINE_VERSION})${XD_WORKER_INFO.error ? ' — ' + XD_WORKER_INFO.error : ''}\n${XD_WORKER_PATH}`);
+                console.log(`엔진 ${XD_ENGINE_VERSION}${XD_ENGINE_CHOICE === 'latest' ? ' (최신)' : ''} · 워커 ${XD_WORKER_INFO.source}${XD_WORKER_INFO.error ? ' — ' + XD_WORKER_INFO.error : ''}\n${XD_WORKER_PATH}`);
             } catch (e) {
-                console.warn('워커 준비 실패, 번들 워커 사용:', e.message);
+                console.warn('버전·워커 준비 실패, 기본값 사용:', e.message);
             }
             const script = document.createElement('script');
             script.src = "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/XDWorldEM.js";

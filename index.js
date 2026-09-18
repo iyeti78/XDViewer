@@ -1105,6 +1105,59 @@ ipcMain.handle('get-app-version', () => {
 });
 
 // 로컬 파일을 HTTP URL로 변환 (디렉토리 구조 유지하여 텍스처 상대경로 해결)
+// ============ XDWorld 공식 배포(GitHub) ============
+//
+// github.com/EgisCorp/XDWorld 의 `Release/<버전>/`에 engine(XDWorldEM.js/.wasm)과 worker(XDWorldWorker.js/.wasm)가
+// 세트로 올라온다. 공식 README 경고: "2.29.3 버전에서 worker 파일이 업데이트되었습니다 … 엔진과 같이 배포된 파일로 교체".
+// 실측으로도 워커 wasm이 2.30.0은 1,290,055B, 2.30.1은 1,301,641B로 다르다 → 엔진과 워커는 항상 같은 버전을 쓴다.
+// CDN(cdn.xdworld.kr/<버전>/)의 엔진 파일은 Release의 것과 동일(254,211B 확인)하므로 엔진은 CDN에서, 워커는 GitHub raw에서 받는다.
+const XD_REPO_API = 'https://api.github.com/repos/EgisCorp/XDWorld/contents/Release';
+const XD_REPO_RAW = 'https://raw.githubusercontent.com/EgisCorp/XDWorld/main';
+const XD_FALLBACK_RELEASES = ['2.30.1', '2.30.0'];   // 목록을 못 받을 때(오프라인 등) 쓸 값
+let releaseCache = null;
+
+/** 공식 배포 버전 목록(최신순). 실패하면 폴백 목록. */
+ipcMain.handle('list-engine-releases', async () => {
+    if (releaseCache) return releaseCache;
+    try {
+        const r = await net.fetch(XD_REPO_API, { headers: { 'User-Agent': 'XDViewer', 'Accept': 'application/vnd.github+json' } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const list = (await r.json())
+            .filter(e => e.type === 'dir' && /^\d+\.\d+\.\d+$/.test(e.name))
+            .map(e => e.name)
+            .sort((a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); return y[0] - x[0] || y[1] - x[1] || y[2] - x[2]; });
+        if (!list.length) throw new Error('버전 폴더가 없습니다');
+        releaseCache = { versions: list, source: 'github' };
+    } catch (e) {
+        console.warn(`[release] 목록을 받지 못해 기본값 사용: ${e.message}`);
+        releaseCache = { versions: XD_FALLBACK_RELEASES, source: 'fallback', error: e.message };
+    }
+    return releaseCache;
+});
+
+/** 공식 README에서 버전별 변경 내용을 뽑는다. `### 2.30.1 (2026/09/14)` ~ 다음 `### ` 전까지 */
+let releaseNotesCache = null;
+ipcMain.handle('get-release-notes', async () => {
+    if (releaseNotesCache) return releaseNotesCache;
+    try {
+        const r = await net.fetch(`${XD_REPO_RAW}/README.md`, { headers: { 'User-Agent': 'XDViewer' } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const md = await r.text();
+        const notes = {};
+        const re = /^###\s+(\d+\.\d+\.\d+)\s*(\([^)]*\))?\s*$/gm;
+        const heads = [...md.matchAll(re)];
+        heads.forEach((m, i) => {
+            const body = md.slice(m.index + m[0].length, i + 1 < heads.length ? heads[i + 1].index : undefined);
+            notes[m[1]] = { date: (m[2] || '').replace(/[()]/g, ''), body: body.trim() };
+        });
+        releaseNotesCache = notes;
+    } catch (e) {
+        console.warn(`[release] 변경 내용을 받지 못했습니다: ${e.message}`);
+        releaseNotesCache = {};
+    }
+    return releaseNotesCache;
+});
+
 // ============ XDWorld 워커 (엔진 버전과 짝을 맞춘다) ============
 //
 // 워커(XDWorldWorker.js + .wasm)는 CDN에 없고(전 버전 404) 사이트마다 사본을 둔다. 빌드도 버전마다 다르다
