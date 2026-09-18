@@ -758,6 +758,28 @@ function ensureLocalFileServer() {
         localFileServer = http.createServer((req, res) => {
             const urlPath = decodeURIComponent(req.url.split('?')[0]);
 
+            // 엔진 리소스(별상자 큐브맵 등): /__xdres__/<파일> → 앱 폴더 assets/<파일>
+            // 엔진은 `SetResourceServerAddr`로 준 주소 뒤에 `StarBox/tycho2t3_80_px.jpg` 같은 상대 경로를 붙여 요청한다.
+            if (urlPath.startsWith('/__xdres__/')) {
+                const rel = urlPath.substring('/__xdres__/'.length).split('\\').join('/');
+                const file = path.join(__dirname, 'assets', rel);
+                if (rel.includes('..') || !file.startsWith(path.join(__dirname, 'assets'))) {
+                    res.writeHead(403);
+                    return res.end('Forbidden');
+                }
+                fs.readFile(file, (err, buf) => {
+                    console.log(`[srv] ${err ? '404' : '200'} xdres ${rel}`);
+                    if (err) {
+                        res.writeHead(404);
+                        return res.end('No resource');
+                    }
+                    const type = rel.endsWith('.jpg') ? 'image/jpeg' : rel.endsWith('.png') ? 'image/png' : 'application/octet-stream';
+                    res.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': type });
+                    res.end(buf);
+                });
+                return;
+            }
+
             // 요청 단위 영상 타일: /__xdimg__/<id>/<L>/<IDY>/<IDY>_<IDX>.png
             if (urlPath.startsWith('/__xdimg__/')) {
                 const m = urlPath.match(/^\/__xdimg__\/(\d+)\/(\d+)\/(\d+)\/\d+_(\d+)\.png$/);

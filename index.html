@@ -217,6 +217,14 @@
                         </select>
                     </div>
                     <div class="settings-section">
+                        <div class="settings-label">우주 배경</div>
+                        <!-- 엔진 별상자(큐브맵). 텍스처는 앱 폴더 assets/StarBox/를 로컬 서버로 준다 -->
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:#ccc;">
+                            <input type="checkbox" id="starboxToggle" checked />
+                            <span>지구본 뒤에 별 표시</span>
+                        </label>
+                    </div>
+                    <div class="settings-section">
                         <div class="settings-label">배경지도</div>
                         <select id="basemapSelect" class="settings-select">
                             <option value="0">기본 (VWorld)</option>
@@ -1684,6 +1692,13 @@
 
             // 엔진 버전 선택 (공식 배포 목록을 기다렸다가 구성)
             (async () => {
+                // 우주 배경(별상자) 체크박스
+                const starbox = document.getElementById('starboxToggle');
+                if (starbox) {
+                    starbox.checked = STARBOX_ON;
+                    starbox.addEventListener('change', () => applyStarBox(starbox.checked));
+                }
+
                 const sel = document.getElementById('engineVersionSelect');
                 await XD_WORKER_READY;   // 공식 버전 목록이 채워진 뒤에 UI를 만든다
                 XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
@@ -4251,12 +4266,38 @@
         let XD_WORKER_PATH = './worker/XDWorldWorker.js';   // 엔진 로드 직전에 확정
         let XD_WORKER_INFO = { source: 'bundled', version: XD_ENGINE_VERSION };
 
+        // ---- 별상자(우주 배경) ----
+        // 엔진은 `SetResourceServerAddr`로 준 주소 뒤에 `StarBox/tycho2t3_80_{px,nx,py,ny,pz,nz}.jpg`를 붙여 큐브맵을 받는다.
+        // 텍스처는 앱 폴더 assets/StarBox/에 두고 로컬 서버 `/__xdres__/`로 준다.
+        let STARBOX_ON = (() => {
+            try { const v = localStorage.getItem('xdv.starbox'); if (v !== null) return v === '1'; } catch (e) { /* 저장소 없음 */ }
+            return true;
+        })();
+        function starboxResourceBase() {
+            try { const p = window.electronAPI.getLocalServerPort(); return p ? `http://127.0.0.1:${p}/__xdres__/` : null; } catch (e) { return null; }
+        }
+        /** 엔진에 별상자 켜기/끄기 (리소스 주소는 initialize 전에 한 번 준다) */
+        function applyStarBox(on) {
+            STARBOX_ON = !!on;
+            try { localStorage.setItem('xdv.starbox', STARBOX_ON ? '1' : '0'); } catch (e) { /* 저장소 없음 */ }
+            try {
+                Module.XDSetStarBox(STARBOX_ON);
+                Module.XDRenderData();
+            } catch (e) {
+                console.warn('별상자 설정 실패:', e.message);
+            }
+        }
+
         // XDWorld 모듈 설정
         var Module = {
             locateFile: function (s) {
                 return "https://cdn.xdworld.kr/" + XD_ENGINE_VERSION + "/" + s; // 모듈 파일 경로 설정 (설정 패널에서 선택, localStorage)
             },
             postRun: function () {
+                // 리소스 주소는 엔진 초기화 전에 잡아야 별상자 텍스처를 그때 받는다
+                const resBase = starboxResourceBase();
+                if (resBase) { try { Module.SetResourceServerAddr(resBase); } catch (e) { console.warn('리소스 주소 설정 실패:', e.message); } }
+
                 Module.initialize({
                     container: document.getElementById("map"), // 지도 컨테이너 설정
                     terrain: {
@@ -4290,6 +4331,9 @@
                         loadingScreen.style.display = 'none';
                     }, 1500); // fade-out 애니메이션 시간과 동일 (1.5초)
                 }, 3000); // 로딩 완료 후 3초 대기
+
+                // 우주 배경(별상자)
+                applyStarBox(STARBOX_ON);
 
                 // SQLite 및 하단 패널 초기화
                 initSqlite();
