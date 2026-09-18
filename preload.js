@@ -119,7 +119,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLocalFileUrl: (filePath) => ipcRenderer.invoke('get-local-file-url', filePath),
   getLocalServerPort: () => ipcRenderer.sendSync('get-local-server-port'),
   listEngineReleases: () => ipcRenderer.invoke('list-engine-releases'),
-  getReleaseNotes: () => ipcRenderer.invoke('get-release-notes'),
   ensureWorker: (version, urlTemplate) => ipcRenderer.invoke('ensure-worker', version, urlTemplate),
   listCachedWorkers: () => ipcRenderer.invoke('list-cached-workers'),
   clearWorkerCache: () => ipcRenderer.invoke('clear-worker-cache'),

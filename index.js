@@ -1135,29 +1135,6 @@ ipcMain.handle('list-engine-releases', async () => {
     return releaseCache;
 });
 
-/** 공식 README에서 버전별 변경 내용을 뽑는다. `### 2.30.1 (2026/09/14)` ~ 다음 `### ` 전까지 */
-let releaseNotesCache = null;
-ipcMain.handle('get-release-notes', async () => {
-    if (releaseNotesCache) return releaseNotesCache;
-    try {
-        const r = await net.fetch(`${XD_REPO_RAW}/README.md`, { headers: { 'User-Agent': 'XDViewer' } });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const md = await r.text();
-        const notes = {};
-        const re = /^###\s+(\d+\.\d+\.\d+)\s*(\([^)]*\))?\s*$/gm;
-        const heads = [...md.matchAll(re)];
-        heads.forEach((m, i) => {
-            const body = md.slice(m.index + m[0].length, i + 1 < heads.length ? heads[i + 1].index : undefined);
-            notes[m[1]] = { date: (m[2] || '').replace(/[()]/g, ''), body: body.trim() };
-        });
-        releaseNotesCache = notes;
-    } catch (e) {
-        console.warn(`[release] 변경 내용을 받지 못했습니다: ${e.message}`);
-        releaseNotesCache = {};
-    }
-    return releaseNotesCache;
-});
-
 // ============ XDWorld 워커 (엔진 버전과 짝을 맞춘다) ============
 //
 // 워커(XDWorldWorker.js + .wasm)는 CDN에 없고(전 버전 404) 사이트마다 사본을 둔다. 빌드도 버전마다 다르다

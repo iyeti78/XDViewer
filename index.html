@@ -215,7 +215,6 @@
                         <select id="engineVersionSelect" class="settings-select" title="XDWorld 공식 배포 버전(github.com/EgisCorp/XDWorld). 엔진과 워커를 같은 버전으로 씁니다. 변경하면 앱이 다시 로딩됩니다">
                             <option value="latest">최신</option>
                         </select>
-                        <div id="engineNotes" style="display:none; margin-top:6px; max-height:120px; overflow:auto; background:#2a2a2a; border:1px solid #444; border-radius:4px; padding:6px 8px; font-size:11px; color:#bbb; line-height:1.5;"></div>
                         <div class="settings-label" style="margin-top:8px;">워커 <span id="workerStatus" style="color:#858585;"></span></div>
                         <!-- 워커는 엔진과 짝이어야 한다. {version}이 있으면 버전별로 받는다. 비우면 번들 워커 -->
                         <input type="text" id="workerSourceInput" class="settings-select" style="width:100%; font-size:11px;"
@@ -1690,19 +1689,6 @@
                 XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
                 sel.value = XD_ENGINE_CHOICE === 'latest' ? 'latest' : XD_ENGINE_VERSION;
                 document.getElementById('engineVersionNow').textContent = `(사용 중 ${XD_ENGINE_VERSION}${XD_ENGINE_CHOICE === 'latest' ? ', 최신' : ''})`;
-
-                // 선택한 버전의 공식 변경 내용 (README에서 추출)
-                const notesBox = document.getElementById('engineNotes');
-                const allNotes = await window.electronAPI.getReleaseNotes();
-                const showNotes = (v) => {
-                    const key = v === 'latest' ? XD_ENGINE_VERSIONS[0] : v;
-                    const n = allNotes && allNotes[key];
-                    if (!n) { notesBox.style.display = 'none'; return; }
-                    notesBox.style.display = 'block';
-                    notesBox.textContent = `${key}${n.date ? ' (' + n.date + ')' : ''}\n` + n.body.replace(/^[#>\s*-]+/gm, m => m.includes('#') ? '' : m);
-                };
-                showNotes(sel.value);
-                sel.addEventListener('change', () => showNotes(sel.value));
 
                 // 워커 상태 표시 + 소스 URL
                 const SOURCE_LABEL = { local: '앱 폴더 worker/<버전>', cache: `캐시된 ${XD_ENGINE_VERSION} 워커`, remote: `${XD_ENGINE_VERSION} 워커 내려받음`, bundled: '번들(버전 안 맞음)' };
