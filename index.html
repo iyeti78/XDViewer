@@ -1043,6 +1043,7 @@
                 case 20: // TILE_LOD_MODEL
                     return "3dmodel";
 
+                case 18: // ELT_3DTILES (포인트 클라우드 타일셋 포함)
                 case 19: // POINT_CLOUD
                     return "pointcloud";
 
@@ -1330,6 +1331,106 @@
 
                 styleBox.appendChild(colorPicker('선색상', 'lineColor'));
                 styleBox.appendChild(rangeSlider('선투명도', 0, 100, 'strokeOpacity'));
+            }
+
+            // 3D Tiles / 포인트 클라우드(LAS 계열): 포인트 크기·고도·렌더 모드
+            // 값은 layerData.pc에 남겨 메뉴를 다시 열어도 유지한다(엔진에 getter가 없는 항목이 있음).
+            if (semanticType === "pointcloud") {
+                const L = layerData.layer;
+                const pc = layerData.pc = layerData.pc || { pointSize: 2, renderMode: 'rgb', interpolate: false };
+                try { pc.heightOffset = Math.round(L.getTileHeightOffset?.() ?? pc.heightOffset ?? 0); } catch (e) { pc.heightOffset = pc.heightOffset || 0; }
+
+                // 접이식 '설정' 헤더
+                const head = document.createElement('div');
+                head.className = 'context-menu-item';
+                head.style.cssText = 'display:flex; justify-content:space-between; align-items:center; cursor:pointer;';
+                const headText = document.createElement('span');
+                headText.textContent = '설정';
+                const caret = document.createElement('span');
+                caret.textContent = '▾';
+                caret.style.color = '#888';
+                head.append(headText, caret);
+
+                const body = document.createElement('div');
+                body.className = 'context-menu-item';
+                body.style.cssText = 'display:none; flex-direction:column; gap:8px; cursor:default;';
+                head.onclick = () => {
+                    const open = body.style.display === 'none';
+                    body.style.display = open ? 'flex' : 'none';
+                    caret.textContent = open ? '▴' : '▾';
+                };
+
+                // 슬라이더 + 숫자 한 줄
+                const numRow = (label, min, max, step, value, onChange, unit = '') => {
+                    const wrap = document.createElement('div');
+                    wrap.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                    const span = document.createElement('span');
+                    span.textContent = label;
+                    span.style.cssText = 'flex:0 0 78px; color:#ccc;';
+                    const range = document.createElement('input');
+                    range.type = 'range'; range.min = min; range.max = max; range.step = step; range.value = value;
+                    range.style.flex = '1';
+                    const num = document.createElement('input');
+                    range.title = num.title = `${min} ~ ${max}${unit}`;
+                    num.type = 'number'; num.min = min; num.max = max; num.step = step; num.value = value;
+                    num.style.cssText = 'width:58px; background:#3c3c3c; color:#ccc; border:1px solid #555; border-radius:3px; padding:2px 4px;';
+                    const apply = (v) => { range.value = v; num.value = v; onChange(Number(v)); Module.XDRenderData(); };
+                    range.oninput = () => apply(range.value);
+                    num.onchange = () => apply(num.value);
+                    wrap.append(span, range, num);
+                    return wrap;
+                };
+
+                body.appendChild(numRow('포인트 크기', 1, 20, 0.5, pc.pointSize, v => {
+                    pc.pointSize = v;
+                    try { L.setPointCloudPointSize(v); } catch (e) { console.warn('포인트 크기 설정 실패:', e.message); }
+                }));
+                body.appendChild(numRow('고도 offset', -500, 500, 1, pc.heightOffset, v => {
+                    pc.heightOffset = v;
+                    try { L.setTileHeightOffset(v); } catch (e) { console.warn('고도 설정 실패:', e.message); }
+                }, 'm'));
+
+                // 색상 표현 방식
+                const modeRow = document.createElement('div');
+                modeRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                const modeLabel = document.createElement('span');
+                modeLabel.textContent = '색상 표현';
+                modeLabel.style.cssText = 'flex:0 0 78px; color:#ccc;';
+                const modeSel = document.createElement('select');
+                modeSel.className = 'settings-select';
+                modeSel.style.cssText = 'flex:1; font-size:12px;';
+                [['rgb', '원본 색상 (RGB)'], ['altitude', '고도별 색상'], ['intensity', '강도(Intensity)']].forEach(([v, t]) => {
+                    const o = document.createElement('option'); o.value = v; o.textContent = t; modeSel.appendChild(o);
+                });
+                modeSel.value = pc.renderMode;
+                modeSel.onchange = () => {
+                    pc.renderMode = modeSel.value;
+                    try {
+                        if (modeSel.value === 'rgb') L.setPointCloudRenderModeRGB();
+                        else if (modeSel.value === 'altitude') L.setPointCloudRenderModeAltitude();
+                        else L.setPointCloudRenderModeIntensity();
+                        Module.XDRenderData();
+                    } catch (e) { console.warn('색상 표현 변경 실패:', e.message); }
+                };
+                modeRow.append(modeLabel, modeSel);
+                body.appendChild(modeRow);
+
+                // 보간(점 사이를 메워 부드럽게)
+                const interpRow = document.createElement('label');
+                interpRow.style.cssText = 'display:flex; align-items:center; gap:6px; cursor:pointer; color:#ccc;';
+                const interp = document.createElement('input');
+                interp.type = 'checkbox'; interp.checked = !!pc.interpolate;
+                interp.onchange = () => {
+                    pc.interpolate = interp.checked;
+                    try { L.setPointCloudInterpolateMode(interp.checked ? 1 : 0); Module.XDRenderData(); } catch (e) { console.warn('보간 설정 실패:', e.message); }
+                };
+                const interpText = document.createElement('span');
+                interpText.textContent = '점 보간 (촘촘하게)';
+                interpRow.append(interp, interpText);
+                body.appendChild(interpRow);
+
+                menu.appendChild(head);
+                menu.appendChild(body);
             }
 
             if (styleBox.children.length > 0) {
@@ -3357,13 +3458,19 @@
                     e.preventDefault();
                     e.stopPropagation();
 
-                    window.currentContextLayer = {
+                    // layerItem에 설정값을 남겨 메뉴를 다시 열어도 유지되게 한다
+                    layerItem._pc = layerItem._pc || { pointSize: 2, renderMode: 'rgb', interpolate: false };
+                    const layerData = {
                         layerItem: layerItem,
                         layer: layer,
                         label: label,
-                        removeBtn: removeBtn
+                        removeBtn: removeBtn,
+                        fileName: parentFolder,
+                        pc: layerItem._pc
                     };
+                    window.currentContextLayer = layerData;
 
+                    buildContextMenu(layerData);   // 3D Tiles도 메뉴를 구성한다(포인트 크기·고도 등)
                     showContextMenu(e, layerItem);
                 });
 
