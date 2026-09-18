@@ -4,3 +4,4 @@ dist/
 nul
 CLAUDE.md
 data/관련 자료.zip
+.playwright-mcp/

@@ -215,15 +215,6 @@
                         <select id="engineVersionSelect" class="settings-select" title="XDWorld 공식 배포 버전(github.com/EgisCorp/XDWorld). 엔진과 워커를 같은 버전으로 씁니다. 변경하면 앱이 다시 로딩됩니다">
                             <option value="latest">최신</option>
                         </select>
-                        <div class="settings-label" style="margin-top:8px;">워커 <span id="workerStatus" style="color:#858585;"></span></div>
-                        <!-- 워커는 엔진과 짝이어야 한다. {version}이 있으면 버전별로 받는다. 비우면 번들 워커 -->
-                        <input type="text" id="workerSourceInput" class="settings-select" style="width:100%; font-size:11px;"
-                            placeholder="워커 URL (빈칸이면 번들). {version} 치환 가능"
-                            title="예) https://사내서버/xdworld/{version}/XDWorldWorker.js — .wasm은 같은 폴더에서 자동으로 받습니다">
-                        <div style="display:flex; gap:4px; margin-top:4px;">
-                            <button id="workerSourceApply" class="settings-select" style="flex:1; cursor:pointer; font-size:11px;">적용 후 다시 불러오기</button>
-                            <button id="workerCacheClear" class="settings-select" style="cursor:pointer; font-size:11px;" title="내려받은 워커 캐시를 모두 지웁니다">캐시 비우기</button>
-                        </div>
                     </div>
                     <div class="settings-section">
                         <div class="settings-label">배경지도</div>
@@ -1084,26 +1075,34 @@
 
             if (bv.region && bv.region.length >= 6) {
                 const [w, s, e, n, minH, maxH] = bv.region;
-                return { lon: deg((w + e) / 2), lat: deg((s + n) / 2), minH, maxH };
+                return { lon: deg((w + e) / 2), lat: deg((s + n) / 2), minH, maxH, kind: 'region' };
             }
 
-            // box/sphere는 root.transform(열 우선 4x4)의 이동분이 ECEF 원점
+            // box/sphere: root.transform(열 우선 4x4)으로 로컬 → ECEF. 로컬 z가 '위'라는 보장이 없으므로
+            // box는 8꼭짓점을 모두 변환해 높이의 최소/최대를 구한다(회전이 있어도 정확).
             const t = root.transform;
-            const center = bv.box ? bv.box.slice(0, 3) : (bv.sphere ? bv.sphere.slice(0, 3) : null);
-            if (!center) return null;
-            let x = center[0], y = center[1], z = center[2];
-            if (t && t.length === 16) {
-                // [m0..m15] 열 우선: 이동분은 m12,m13,m14. 중심에 회전·이동 적용
-                x = t[0] * center[0] + t[4] * center[1] + t[8] * center[2] + t[12];
-                y = t[1] * center[0] + t[5] * center[1] + t[9] * center[2] + t[13];
-                z = t[2] * center[0] + t[6] * center[1] + t[10] * center[2] + t[14];
+            const toEcef = (lx, ly, lz) => (t && t.length === 16)
+                ? [t[0] * lx + t[4] * ly + t[8] * lz + t[12], t[1] * lx + t[5] * ly + t[9] * lz + t[13], t[2] * lx + t[6] * ly + t[10] * lz + t[14]]
+                : [lx, ly, lz];
+
+            if (bv.box && bv.box.length >= 12) {
+                const [cx, cy, cz, ux, uy, uz, vx, vy, vz, wx, wy, wz] = bv.box;
+                let minH = Infinity, maxH = -Infinity, lonSum = 0, latSum = 0, n = 0;
+                for (const su of [-1, 1]) for (const sv of [-1, 1]) for (const sw of [-1, 1]) {
+                    const [X, Y, Z] = toEcef(cx + su * ux + sv * vx + sw * wx, cy + su * uy + sv * vy + sw * wy, cz + su * uz + sv * vz + sw * wz);
+                    const g = ecefToLonLatHeight(X, Y, Z);
+                    minH = Math.min(minH, g.height); maxH = Math.max(maxH, g.height);
+                    lonSum += g.lon; latSum += g.lat; n++;
+                }
+                return { lon: lonSum / n, lat: latSum / n, minH, maxH, kind: 'box' };
             }
-            const c = ecefToLonLatHeight(x, y, z);
-            // 높이 반폭: box는 세 반축의 z성분 합(로컬 z가 위가 아닐 수 있어 절대값 합), sphere는 반지름
-            let half = 0;
-            if (bv.box && bv.box.length >= 12) half = Math.abs(bv.box[5]) + Math.abs(bv.box[8]) + Math.abs(bv.box[11]);
-            else if (bv.sphere && bv.sphere.length >= 4) half = bv.sphere[3];
-            return { lon: c.lon, lat: c.lat, minH: c.height - half, maxH: c.height + half };
+            if (bv.sphere && bv.sphere.length >= 4) {
+                const [sx, sy, sz, r] = bv.sphere;
+                const [X, Y, Z] = toEcef(sx, sy, sz);
+                const c = ecefToLonLatHeight(X, Y, Z);
+                return { lon: c.lon, lat: c.lat, minH: c.height - r, maxH: c.height + r, kind: 'sphere' };
+            }
+            return null;
         }
 
         /** 지형 높이(여러 점 중앙값). 타일이 아직 안 온 지점은 0이 나올 수 있어 주변도 본다 */
@@ -1498,13 +1497,13 @@
 
                 // 지형에 맞추기: 타일셋 바닥 높이와 그 지점 지형 높이의 차이를 offset으로
                 const fitRow = document.createElement('div');
-                fitRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                fitRow.style.cssText = 'display:flex; flex-direction:column; align-items:stretch; gap:4px;';
                 const fitBtn = document.createElement('button');
                 fitBtn.textContent = '지형에 맞추기';
                 fitBtn.className = 'settings-select';
-                fitBtn.style.cssText = 'flex:0 0 auto; cursor:pointer; font-size:11px; padding:3px 8px;';
+                fitBtn.style.cssText = 'cursor:pointer; font-size:11px; padding:3px 8px;';
                 const fitMsg = document.createElement('span');
-                fitMsg.style.cssText = 'font-size:11px; color:#888; flex:1;';
+                fitMsg.style.cssText = 'font-size:11px; color:#888; line-height:1.5; white-space:pre-line;';
                 fitMsg.textContent = layerData.tilesetPath ? '' : 'tileset 경로를 몰라 사용할 수 없습니다';
                 fitBtn.disabled = !layerData.tilesetPath;
                 fitBtn.onclick = async () => {
@@ -1523,7 +1522,8 @@
                         const range = heightRow.querySelector('input[type=range]'), num = heightRow.querySelector('input[type=number]');
                         range.value = Math.max(Number(range.min), Math.min(Number(range.max), offset));
                         num.value = offset;
-                        fitMsg.textContent = `지형 ${Math.round(ground)}m − 바닥 ${Math.round(fp.minH)}m = ${offset}m`;
+                        fitMsg.textContent = `타일셋 바닥 ${Math.round(fp.minH)}m (${fp.kind}), 지형 ${Math.round(ground)}m
+→ 고도 offset ${offset}m 적용`;
                     } catch (e) {
                         fitMsg.textContent = '실패: ' + (e.message || e);
                     } finally {
@@ -1689,30 +1689,6 @@
                 XD_ENGINE_VERSIONS.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
                 sel.value = XD_ENGINE_CHOICE === 'latest' ? 'latest' : XD_ENGINE_VERSION;
                 document.getElementById('engineVersionNow').textContent = `(사용 중 ${XD_ENGINE_VERSION}${XD_ENGINE_CHOICE === 'latest' ? ', 최신' : ''})`;
-
-                // 워커 상태 표시 + 소스 URL
-                const SOURCE_LABEL = { local: '앱 폴더 worker/<버전>', cache: `캐시된 ${XD_ENGINE_VERSION} 워커`, remote: `${XD_ENGINE_VERSION} 워커 내려받음`, bundled: '번들(버전 안 맞음)' };
-                const wStatus = document.getElementById('workerStatus');
-                const wInput = document.getElementById('workerSourceInput');
-                wInput.value = XD_WORKER_SOURCE;
-                const refreshWorkerStatus = async () => {
-                    await XD_WORKER_READY;   // 워커 준비(비동기)가 끝난 뒤의 실제 상태를 보여준다
-                    const cached = await window.electronAPI.listCachedWorkers();
-                    const mismatch = XD_WORKER_INFO.source === 'bundled';
-                    wStatus.textContent = `(${SOURCE_LABEL[XD_WORKER_INFO.source] || XD_WORKER_INFO.source}${XD_WORKER_INFO.error ? ' — ' + XD_WORKER_INFO.error : ''}${cached.length ? `, 캐시 ${cached.join(', ')}` : ''})`;
-                    wStatus.style.color = mismatch ? '#e0a030' : '#858585';
-                    wStatus.title = mismatch ? '엔진 버전에 맞는 워커가 없어 번들 워커를 씁니다. 버전별 워커 URL을 넣거나 worker/<버전>/ 폴더에 두세요.' : '';
-                };
-                refreshWorkerStatus();
-                document.getElementById('workerSourceApply').addEventListener('click', () => {
-                    try { localStorage.setItem('xdv.workerSource', wInput.value.trim()); } catch (e) { /* 무시 */ }
-                    location.reload();
-                });
-                document.getElementById('workerCacheClear').addEventListener('click', async () => {
-                    await window.electronAPI.clearWorkerCache();
-                    refreshWorkerStatus();
-                    alert('워커 캐시를 비웠습니다. 다시 불러오면 새로 내려받습니다.');
-                });
                 sel.addEventListener('change', () => {
                     const v = sel.value;
                     if (v === XD_ENGINE_CHOICE) return;
