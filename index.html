@@ -1066,8 +1066,20 @@
             const clean = src.replace(/^file:\/\/\//i, '').split('\\').join('/');
             const dir = clean.slice(0, clean.lastIndexOf('/'));
             const name = clean.slice(clean.lastIndexOf('/') + 1);
-            const reg = window.electronAPI.registerTilesetRoot(dir);
-            if (!reg || reg.error || !reg.port) return src;   // 등록 실패하면 원래 경로로
+            // 로컬 서버 등록이 안 되면(구버전 preload로 F5만 한 경우 등) 원래 경로로 그대로 읽는다.
+            // 이때는 세션 중 고도·상세도 변경이 화면에 안 먹지만(엔진 URL 캐시), 적어도 보이기는 한다.
+            let reg = null;
+            try {
+                if (window.electronAPI && typeof window.electronAPI.registerTilesetRoot === 'function') {
+                    reg = window.electronAPI.registerTilesetRoot(dir);
+                }
+            } catch (e) {
+                console.warn('타일셋 폴더 등록 실패(앱을 다시 시작하면 해결됩니다):', e.message);
+            }
+            if (!reg || reg.error || !reg.port) {
+                console.warn('타일셋을 로컬 서버 없이 직접 읽습니다:', src);
+                return src;
+            }
             return `http://127.0.0.1:${reg.port}/__xd3d__/${reg.id}/v${version}/${name}`;
         }
 
@@ -1090,7 +1102,9 @@
             // 상세도는 임포트 시점에만 반영된다(런타임에 바꿔도 새 타일을 안 받는다, 실측)
             try { Module.getOption().setMaxGeometricError(Number(pc.detail) || TILES_DETAIL_DEFAULT); } catch (e) { console.warn('상세도 설정 실패:', e.message); }
             const layer = new Module.JSLayerList(true).createLayer(name, Module.ELT_3DTILES);
-            layer.import3DTiles({ url: tilesetUrlAt(src, version), autoMove: false, offsetZ: Number(pc.heightOffset) || 0 });
+            const url = tilesetUrlAt(src, version);
+            console.log(`3D Tiles 임포트: ${url} (고도 offset ${Number(pc.heightOffset) || 0}m, 상세도 ${Number(pc.detail) || TILES_DETAIL_DEFAULT})`);
+            layer.import3DTiles({ url: url, autoMove: false, offsetZ: Number(pc.heightOffset) || 0 });
             try { layer.setPointCloudPointSize(pc.pointSize || 2); } catch (e) { /* 무시 */ }
             try {
                 if (pc.renderMode === 'altitude') layer.setPointCloudRenderModeAltitude();
