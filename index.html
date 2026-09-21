@@ -1060,12 +1060,37 @@
         //  - `Module.XDEMapRemoveLayer`로 3D Tiles를 지우면 **그 뒤 모든 3D Tiles 임포트가 안 그려진다**.
         //    → 3D Tiles는 반드시 `JSLayerList.delLayerAtName`으로 지운다.
 
+        // 블록별로 만든 타일셋을 합친 경우 자식이 자기 폴더 밖을 가리킨다(`../../prj01_blocks/b01/…/tileset.json`).
+        // 로컬 서버로 줄 때 상위 폴더까지 포함해야 `..`가 서버 경로 안에 남는다. tileset.json에서 `../`가 가장
+        // 깊게 올라가는 수를 세어(자식의 자식을 감안해 한 단계 여유) 그만큼 위를 기준 폴더로 잡는다.
+        const tilesetServeRootCache = new Map();
+        function tilesetServeRoot(dir, file) {
+            const key = dir + '/' + file;
+            if (tilesetServeRootCache.has(key)) return tilesetServeRootCache.get(key);
+            let up = 0;
+            try {
+                const text = JSON.stringify(window.electronAPI.readJsonFile(dir + '/' + file));
+                for (const m of text.matchAll(/(?:\.\.\/)+/g)) up = Math.max(up, m[0].length / 3);
+            } catch (e) { /* 못 읽으면 올라가지 않는다 */ }
+            if (up > 0) up += 1;
+            const parts = dir.split('/');
+            const climb = Math.min(up, Math.max(0, parts.length - 1));   // 드라이브보다 위로는 안 간다
+            const out = {
+                root: parts.slice(0, parts.length - climb).join('/'),
+                rel: climb > 0 ? parts.slice(parts.length - climb).join('/') + '/' : ''
+            };
+            tilesetServeRootCache.set(key, out);
+            if (climb > 0) console.log(`타일셋이 상위 폴더를 참조합니다 → 서버 기준 폴더 ${out.root}`);
+            return out;
+        }
+
         /** 로컬 경로/원격 URL → 버전이 붙은 타일셋 URL (로컬은 로컬 서버 경유) */
         function tilesetUrlAt(src, version) {
             if (/^https?:\/\//i.test(src)) return src + (src.includes('?') ? '&' : '?') + 'xdv=' + version;
             const clean = src.replace(/^file:\/\/\//i, '').split('\\').join('/');
-            const dir = clean.slice(0, clean.lastIndexOf('/'));
-            const name = clean.slice(clean.lastIndexOf('/') + 1);
+            const serve = tilesetServeRoot(clean.slice(0, clean.lastIndexOf('/')), clean.slice(clean.lastIndexOf('/') + 1));
+            const dir = serve.root;
+            const name = serve.rel + clean.slice(clean.lastIndexOf('/') + 1);
             // 로컬 서버 등록이 안 되면(구버전 preload로 F5만 한 경우 등) 원래 경로로 그대로 읽는다.
             // 이때는 세션 중 고도·상세도 변경이 화면에 안 먹지만(엔진 URL 캐시), 적어도 보이기는 한다.
             let reg = null;
@@ -1173,10 +1198,11 @@
                     ground = h;
                 }
                 if (ground === null) return;
-                const offset = Math.round((ground - fp.minH) * 10) / 10;
+                const base = Number.isFinite(fp.fitH) ? fp.fitH : fp.minH;
+                const offset = Math.round((ground - base) * 10) / 10;
                 if (Math.abs(offset) < 1) return;   // 이미 지형에 맞으면 그대로
                 reimportTilesetWithOffset(ref, offset);
-                console.log(`3D Tiles 지형 맞춤: 바닥 ${Math.round(fp.minH)}m(${fp.kind}), 지형 ${Math.round(ground)}m → 고도 offset ${offset}m`);
+                console.log(`3D Tiles 지형 맞춤: 기준 높이 ${Math.round(base)}m(${fp.kind}), 지형 ${Math.round(ground)}m → 고도 offset ${offset}m`);
             } catch (e) {
                 console.warn('타일셋 자동 배치 실패:', e.message);
             }
@@ -1215,7 +1241,7 @@
 
             if (bv.region && bv.region.length >= 6) {
                 const [w, s, e, n, minH, maxH] = bv.region;
-                return { lon: deg((w + e) / 2), lat: deg((s + n) / 2), minH, maxH, kind: 'region' };
+                return { lon: deg((w + e) / 2), lat: deg((s + n) / 2), minH, maxH, centerH: (minH + maxH) / 2, fitH: minH, kind: 'region' };
             }
 
             // box/sphere: root.transform(열 우선 4x4)으로 로컬 → ECEF. 로컬 z가 '위'라는 보장이 없으므로
@@ -1234,13 +1260,30 @@
                     minH = Math.min(minH, g.height); maxH = Math.max(maxH, g.height);
                     lonSum += g.lon; latSum += g.lat; n++;
                 }
-                return { lon: lonSum / n, lat: latSum / n, minH, maxH, kind: 'box' };
+                const [CX, CY, CZ] = toEcef(cx, cy, cz);
+                const center = ecefToLonLatHeight(CX, CY, CZ);
+                // transform이 없으면 박스 축이 ECEF 축이라 지면과 무관하게 부풀어 있다(실측: 실제 ±20m 데이터가 ±400m 박스).
+                // 이런 박스는 최소 높이를 바닥으로 쓸 수 없다. 블록을 합친 타일셋이면 자식 박스 중심의 중앙값이
+                // 실제 지표면에 가장 가깝고(실측: 루트 중심 −34m, 자식 중심 중앙값 −22m, 지표면은 −22m 쪽),
+                // 자식이 없으면 루트 중심을 쓴다.
+                const axisAligned = !(t && t.length === 16);
+                let fitH = axisAligned ? center.height : minH;
+                let kind = axisAligned ? 'box(ECEF 축, 중심 기준)' : 'box';
+                if (axisAligned && Array.isArray(root.children) && root.children.length) {
+                    const hs = root.children
+                        .map(c => c.boundingVolume && c.boundingVolume.box)
+                        .filter(b => b && b.length >= 3)
+                        .map(b => ecefToLonLatHeight(b[0], b[1], b[2]).height)
+                        .sort((a, b) => a - b);
+                    if (hs.length) { fitH = hs[hs.length >> 1]; kind = 'box(ECEF 축, 블록 중심 중앙값)'; }
+                }
+                return { lon: center.lon, lat: center.lat, minH, maxH, centerH: center.height, fitH: fitH, kind: kind };
             }
             if (bv.sphere && bv.sphere.length >= 4) {
                 const [sx, sy, sz, r] = bv.sphere;
                 const [X, Y, Z] = toEcef(sx, sy, sz);
                 const c = ecefToLonLatHeight(X, Y, Z);
-                return { lon: c.lon, lat: c.lat, minH: c.height - r, maxH: c.height + r, kind: 'sphere' };
+                return { lon: c.lon, lat: c.lat, minH: c.height - r, maxH: c.height + r, centerH: c.height, fitH: c.height - r, kind: 'sphere' };
             }
             return null;
         }
@@ -1672,14 +1715,15 @@
                         if (!fp) { fitMsg.textContent = 'tileset.json에서 위치를 찾지 못했습니다'; return; }
                         const ground = terrainHeightAround(fp.lon, fp.lat);
                         if (ground === null) { fitMsg.textContent = '지형 높이를 읽지 못했습니다'; return; }
-                        const offset = Math.round((ground - fp.minH) * 10) / 10;
+                        const base = Number.isFinite(fp.fitH) ? fp.fitH : fp.minH;
+                        const offset = Math.round((ground - base) * 10) / 10;
                         pc.heightOffset = offset;
                         if (tref) layerData.layer = reimportTilesetWithOffset(tref, offset);
                         else Module.XDRenderData();
                         const range = heightRow.querySelector('input[type=range]'), num = heightRow.querySelector('input[type=number]');
                         range.value = Math.max(Number(range.min), Math.min(Number(range.max), offset));
                         num.value = offset;
-                        fitMsg.textContent = `타일셋 바닥 ${Math.round(fp.minH)}m (${fp.kind}), 지형 ${Math.round(ground)}m
+                        fitMsg.textContent = `타일셋 기준 ${Math.round(base)}m (${fp.kind}), 지형 ${Math.round(ground)}m
 → 고도 offset ${offset}m 적용`;
                     } catch (e) {
                         fitMsg.textContent = '실패: ' + (e.message || e);
