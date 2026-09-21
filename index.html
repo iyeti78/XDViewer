@@ -1050,6 +1050,96 @@
             }
         }
 
+        // ============ 3D Tiles 임포트 / 고도 offset 다시 적용 ============
+        //
+        // 엔진 사정(실측, 2.30.1):
+        //  - `setTileHeightOffset`은 값만 바뀌고 이미 그려진 타일은 그대로다. `reloadTiles`를 불러도 안 움직인다.
+        //    → 높이를 바꾸려면 `import3DTiles({offsetZ})`로 **다시 임포트**하는 수밖에 없다.
+        //  - 엔진은 타일셋을 **URL 단위로 캐시**해서 같은 URL을 다시 임포트하면 아무것도 안 그려진다.
+        //    → 로컬 폴더는 로컬 서버 `/__xd3d__/<id>/v<버전>/`로 주고 버전을 올려 URL을 바꾼다(원격은 `?xdv=`).
+        //  - `Module.XDEMapRemoveLayer`로 3D Tiles를 지우면 **그 뒤 모든 3D Tiles 임포트가 안 그려진다**.
+        //    → 3D Tiles는 반드시 `JSLayerList.delLayerAtName`으로 지운다.
+
+        /** 로컬 경로/원격 URL → 버전이 붙은 타일셋 URL (로컬은 로컬 서버 경유) */
+        function tilesetUrlAt(src, version) {
+            if (/^https?:\/\//i.test(src)) return src + (src.includes('?') ? '&' : '?') + 'xdv=' + version;
+            const clean = src.replace(/^file:\/\/\//i, '').split('\\').join('/');
+            const dir = clean.slice(0, clean.lastIndexOf('/'));
+            const name = clean.slice(clean.lastIndexOf('/') + 1);
+            const reg = window.electronAPI.registerTilesetRoot(dir);
+            if (!reg || reg.error || !reg.port) return src;   // 등록 실패하면 원래 경로로
+            return `http://127.0.0.1:${reg.port}/__xd3d__/${reg.id}/v${version}/${name}`;
+        }
+
+        /** 3D Tiles 레이어 하나 만들기 (이름·URL·고도 offset·포인트 설정) */
+        function importTilesetLayer(name, src, version, pc) {
+            const layer = new Module.JSLayerList(true).createLayer(name, Module.ELT_3DTILES);
+            layer.import3DTiles({ url: tilesetUrlAt(src, version), autoMove: false, offsetZ: Number(pc.heightOffset) || 0 });
+            try { layer.setPointCloudPointSize(pc.pointSize || 2); } catch (e) { /* 무시 */ }
+            try {
+                if (pc.renderMode === 'altitude') layer.setPointCloudRenderModeAltitude();
+                else if (pc.renderMode === 'intensity') layer.setPointCloudRenderModeIntensity();
+            } catch (e) { /* 무시 */ }
+            try { if (pc.interpolate) layer.setPointCloudInterpolateMode(1); } catch (e) { /* 무시 */ }
+            return layer;
+        }
+
+        /** 3D Tiles 레이어 지우기 (XDEMapRemoveLayer는 쓰지 말 것) */
+        function removeTilesetLayer(name) {
+            try { return new Module.JSLayerList(true).delLayerAtName(name); } catch (e) { return false; }
+        }
+
+        /**
+         * 고도 offset을 바꿔 다시 그린다. ref.layer / ref.version을 갱신한다.
+         * @param {{layer:object, name:string, src:string, version:number, pc:object}} ref
+         */
+        function reimportTilesetWithOffset(ref, offset) {
+            const next = Math.round((Number(offset) || 0) * 10) / 10;
+            ref.pc.heightOffset = next;
+            // 같은 값이면 다시 읽지 않는다(큰 포인트 클라우드는 한 번 읽는 데 수십 초 걸린다)
+            if (ref.appliedOffset === next && ref.layer) return ref.layer;
+            ref.appliedOffset = next;
+            removeTilesetLayer(ref.name);
+            ref.version += 1;
+            ref.layer = importTilesetLayer(ref.name, ref.src, ref.version, ref.pc);
+            ref.layer.setVisible(ref.visible !== false);
+            Module.XDRenderData();
+            return ref.layer;
+        }
+
+        /**
+         * 타일셋을 불러온 직후: 데이터 위치로 카메라를 옮기고, 지형이 오면 자동으로 지형 높이에 앉힌다.
+         * 변환기가 정표고(지오이드 기준)를 타원체고로 그대로 적어 놓는 경우가 많아 그냥 두면 지형 아래에 잠긴다.
+         */
+        async function autoPlaceTileset(ref, srcPath) {
+            try {
+                const json = await readTilesetJson(srcPath);
+                const fp = tilesetFootprint(json);
+                if (!fp) { console.warn('tileset.json에서 위치를 찾지 못해 카메라를 옮기지 않습니다'); return; }
+                Module.getViewCamera().move(new Module.JSVector3D(fp.lon, fp.lat, (fp.maxH || 0) + 1000), 89.9, 0, 0);
+                Module.XDRenderData();
+
+                // 지형 타일이 도착할 때까지 기다린다. 도착 전에는 0이 나오고, 상세 레벨이 올라오는 동안
+                // 값이 계속 바뀌므로(실측 46m→57m) 연속 두 번이 0.5m 안으로 들어올 때까지 본다. 최대 12초.
+                let ground = null, prev = null;
+                for (let i = 0; i < 24; i++) {
+                    await new Promise(r => setTimeout(r, 500));
+                    const h = terrainHeightAround(fp.lon, fp.lat);
+                    if (h === null || Math.abs(h) < 0.01) continue;
+                    if (prev !== null && Math.abs(h - prev) < 0.5) { ground = h; break; }
+                    prev = h;
+                    ground = h;
+                }
+                if (ground === null) return;
+                const offset = Math.round((ground - fp.minH) * 10) / 10;
+                if (Math.abs(offset) < 1) return;   // 이미 지형에 맞으면 그대로
+                reimportTilesetWithOffset(ref, offset);
+                console.log(`3D Tiles 지형 맞춤: 바닥 ${Math.round(fp.minH)}m(${fp.kind}), 지형 ${Math.round(ground)}m → 고도 offset ${offset}m`);
+            } catch (e) {
+                console.warn('타일셋 자동 배치 실패:', e.message);
+            }
+        }
+
         // ============ 3D Tiles를 지형에 앉히기 ============
         //
         // tileset.json의 root.boundingVolume에서 타일셋이 놓인 위치와 **바닥 높이**를 구하고,
@@ -1477,30 +1567,23 @@
 
                 body.appendChild(numRow('포인트 크기', 1, 20, 0.5, pc.pointSize, v => {
                     pc.pointSize = v;
-                    try { L.setPointCloudPointSize(v); } catch (e) { console.warn('포인트 크기 설정 실패:', e.message); }
+                    try { (layerData.layer || L).setPointCloudPointSize(v); } catch (e) { console.warn('포인트 크기 설정 실패:', e.message); }
                 }));
-                // 설정을 바꾼 뒤 눈에 안 보이면 쓰는 수동 갱신
-                const reloadRow = document.createElement('div');
-                reloadRow.style.cssText = 'display:flex; align-items:center; gap:6px;';
-                const reloadBtn = document.createElement('button');
-                reloadBtn.textContent = '타일 다시 읽기';
-                reloadBtn.className = 'settings-select';
-                reloadBtn.style.cssText = 'flex:0 0 auto; cursor:pointer; font-size:11px; padding:3px 8px;';
-                reloadBtn.title = '설정이 화면에 바로 안 보일 때 타일을 다시 읽습니다';
-                reloadBtn.onclick = () => { try { L.reloadTiles(); Module.XDRenderData(); } catch (e) { console.warn('타일 갱신 실패:', e.message); } };
-                reloadRow.appendChild(reloadBtn);
-                // setTileHeightOffset만으로는 이미 만들어진 타일이 그대로라 화면이 안 바뀐다 → reloadTiles로 다시 그린다(실측).
-                // 슬라이더를 끄는 동안 매번 다시 읽으면 무거우니 250ms 쉬면 적용.
-                let reloadTimer = null;
+                // 고도 offset은 임포트할 때만 먹는다(엔진 제약) → 값을 바꾸면 타일셋을 다시 임포트한다.
+                // 슬라이더를 끄는 동안 매번 다시 읽으면 무거우니 400ms 쉬면 적용.
+                const tref = layerData.tilesetRef;
+                let reimportTimer = null;
                 const applyHeight = (v) => {
-                    pc.heightOffset = v;
-                    try {
-                        L.setTileHeightOffset(v);
-                        clearTimeout(reloadTimer);
-                        reloadTimer = setTimeout(() => { try { L.reloadTiles(); Module.XDRenderData(); } catch (e) { console.warn('타일 갱신 실패:', e.message); } }, 250);
-                    } catch (e) { console.warn('고도 설정 실패:', e.message); }
+                    pc.heightOffset = Number(v) || 0;
+                    if (!tref) { console.warn('타일셋 참조가 없어 고도를 바꿀 수 없습니다'); return; }
+                    clearTimeout(reimportTimer);
+                    reimportTimer = setTimeout(() => {
+                        try {
+                            layerData.layer = reimportTilesetWithOffset(tref, pc.heightOffset);
+                        } catch (e) { console.warn('고도 적용 실패:', e.message); }
+                    }, 400);
                 };
-                const heightRow = numRow('고도 offset', -500, 500, 1, pc.heightOffset, applyHeight, 'm');
+                const heightRow = numRow('고도 offset', -1000, 1000, 1, pc.heightOffset, applyHeight, 'm');
                 body.appendChild(heightRow);
 
                 // 지형에 맞추기: 타일셋 바닥 높이와 그 지점 지형 높이의 차이를 offset으로
@@ -1524,9 +1607,8 @@
                         if (ground === null) { fitMsg.textContent = '지형 높이를 읽지 못했습니다'; return; }
                         const offset = Math.round((ground - fp.minH) * 10) / 10;
                         pc.heightOffset = offset;
-                        L.setTileHeightOffset(offset);
-                        try { L.reloadTiles(); } catch (e) { /* 무시 */ }
-                        Module.XDRenderData();
+                        if (tref) layerData.layer = reimportTilesetWithOffset(tref, offset);
+                        else Module.XDRenderData();
                         const range = heightRow.querySelector('input[type=range]'), num = heightRow.querySelector('input[type=number]');
                         range.value = Math.max(Number(range.min), Math.min(Number(range.max), offset));
                         num.value = offset;
@@ -1557,9 +1639,10 @@
                 modeSel.onchange = () => {
                     pc.renderMode = modeSel.value;
                     try {
-                        if (modeSel.value === 'rgb') L.setPointCloudRenderModeRGB();
-                        else if (modeSel.value === 'altitude') L.setPointCloudRenderModeAltitude();
-                        else L.setPointCloudRenderModeIntensity();
+                        const cur = layerData.layer || L;
+                        if (modeSel.value === 'rgb') cur.setPointCloudRenderModeRGB();
+                        else if (modeSel.value === 'altitude') cur.setPointCloudRenderModeAltitude();
+                        else cur.setPointCloudRenderModeIntensity();
                         Module.XDRenderData();
                     } catch (e) { console.warn('색상 표현 변경 실패:', e.message); }
                 };
@@ -1573,13 +1656,12 @@
                 interp.type = 'checkbox'; interp.checked = !!pc.interpolate;
                 interp.onchange = () => {
                     pc.interpolate = interp.checked;
-                    try { L.setPointCloudInterpolateMode(interp.checked ? 1 : 0); Module.XDRenderData(); } catch (e) { console.warn('보간 설정 실패:', e.message); }
+                    try { (layerData.layer || L).setPointCloudInterpolateMode(interp.checked ? 1 : 0); Module.XDRenderData(); } catch (e) { console.warn('보간 설정 실패:', e.message); }
                 };
                 const interpText = document.createElement('span');
                 interpText.textContent = '점 보간 (촘촘하게)';
                 interpRow.append(interp, interpText);
                 body.appendChild(interpRow);
-                body.appendChild(reloadRow);
 
                 menu.appendChild(head);
                 menu.appendChild(body);
@@ -3515,13 +3597,14 @@
                 // 상위 폴더명 추출
                 let pathParts = filePath.split(/[\\/]/);
                 let parentFolder = pathParts.length > 1 ? pathParts[pathParts.length - 2] : '_LAYER_' + index;
-                let layer = layerList.createLayer(parentFolder, Module.ELT_3DTILES);
-                layer.import3DTiles({
-                    url: filePath,
-                    autoMove: true,
-                    offsetZ: 2.0
-                });
-                layer.setPointCloudPointSize(2.0); // 포인트 클라우드 크기 설정
+                // 고도 offset은 임포트할 때만 먹으므로(엔진 제약, reimportTilesetWithOffset 주석 참고)
+                // 레이어 참조를 ref에 담아 두고 offset을 바꿀 때마다 같은 이름으로 다시 만든다.
+                const pc = { pointSize: 2, renderMode: 'rgb', interpolate: false, heightOffset: 0 };
+                const ref = { name: parentFolder, src: filePath, version: 1, pc: pc, visible: true, layer: null };
+                ref.layer = importTilesetLayer(parentFolder, filePath, 1, pc);
+                let layer = ref.layer;
+                // 데이터 위치로 카메라 이동 + 지형에 자동으로 앉히기
+                autoPlaceTileset(ref, filePath);
 
                 // 새 레이어 UI 생성
                 const layerItem = document.createElement('div');
@@ -3532,7 +3615,9 @@
                 checkbox.type = 'checkbox';
                 checkbox.checked = true;
                 checkbox.addEventListener('change', () => {
-                    layer.setVisible(checkbox.checked);
+                    ref.visible = checkbox.checked;
+                    ref.layer.setVisible(checkbox.checked);
+                    Module.XDRenderData();
                 });
 
                 // 레이어 이름
@@ -3583,7 +3668,9 @@
                 removeBtn.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 4L4 12M4 4L12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
                 removeBtn.title = `${label.textContent} 레이어를 삭제합니다`;
                 removeBtn.addEventListener('click', () => {
-                    Module.XDEMapRemoveLayer(label.textContent);
+                    // 3D Tiles는 XDEMapRemoveLayer로 지우면 그 뒤 임포트가 모두 안 그려진다(실측)
+                    removeTilesetLayer(ref.name);
+                    Module.XDRenderData();
                     layerItem.remove();
                     mouseOverInterface(false);
                 });
@@ -3600,15 +3687,15 @@
                     e.stopPropagation();
 
                     // layerItem에 설정값을 남겨 메뉴를 다시 열어도 유지되게 한다
-                    layerItem._pc = layerItem._pc || { pointSize: 2, renderMode: 'rgb', interpolate: false };
                     const layerData = {
                         layerItem: layerItem,
-                        layer: layer,
+                        layer: ref.layer,
                         label: label,
                         removeBtn: removeBtn,
                         fileName: parentFolder,
                         tilesetPath: filePath,   // '지형에 맞추기'가 boundingVolume을 읽는다
-                        pc: layerItem._pc
+                        tilesetRef: ref,         // 고도 offset은 이 ref로 다시 임포트해 적용한다
+                        pc: ref.pc
                     };
                     window.currentContextLayer = layerData;
 

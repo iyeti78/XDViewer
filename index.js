@@ -758,6 +758,37 @@ function ensureLocalFileServer() {
         localFileServer = http.createServer((req, res) => {
             const urlPath = decodeURIComponent(req.url.split('?')[0]);
 
+            // 로컬 3D Tiles: /__xd3d__/<id>/v<버전>/<타일셋 안 상대경로> → 등록해 둔 폴더의 파일
+            // 버전 구간을 두는 이유: 엔진이 타일셋 데이터를 **URL 단위로 캐시**해서 같은 URL을 다시 임포트하면
+            // 아무것도 안 그려진다(실측). 고도 offset을 바꿀 때마다 버전을 올려 새 URL로 다시 읽게 한다.
+            if (urlPath.startsWith('/__xd3d__/')) {
+                const m = urlPath.match(/^\/__xd3d__\/(\d+)\/v\d+\/(.*)$/);
+                const root = m && tilesetRoots.get(Number(m[1]));
+                if (!root) {
+                    res.writeHead(404);
+                    return res.end('Unknown tileset');
+                }
+                const rel = m[2].split('\\').join('/');
+                const file = path.join(root, rel);
+                if (rel.includes('..') || !file.startsWith(root)) {
+                    res.writeHead(403);
+                    return res.end('Forbidden');
+                }
+                fs.readFile(file, (err, buf) => {
+                    if (process.env.XDREQ_DEBUG) console.log(`[srv] ${err ? '404' : '200'} xd3d ${rel}`);
+                    if (err) {
+                        res.writeHead(404);
+                        return res.end('No file');
+                    }
+                    const type = rel.endsWith('.json') ? 'application/json'
+                        : /\.(png|jpg|jpeg)$/i.test(rel) ? (rel.endsWith('.png') ? 'image/png' : 'image/jpeg')
+                            : 'application/octet-stream';
+                    res.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': type });
+                    res.end(buf);
+                });
+                return;
+            }
+
             // 엔진 리소스(별상자 큐브맵 등): /__xdres__/<파일> → 앱 폴더 assets/<파일>
             // 엔진은 `SetResourceServerAddr`로 준 주소 뒤에 `StarBox/tycho2t3_80_px.jpg` 같은 상대 경로를 붙여 요청한다.
             if (urlPath.startsWith('/__xdres__/')) {
@@ -1232,6 +1263,23 @@ ipcMain.handle('is-fullscreen', () => !!(mainWindow && mainWindow.isFullScreen()
 
 // 렌더러가 엔진 초기화(동기) 시점에 로컬 서버 포트를 알아야 해서 sendSync
 ipcMain.on('get-local-server-port', (event) => { event.returnValue = localFileServerPort; });
+
+// 3D Tiles 폴더 등록(동기): 같은 폴더는 같은 id를 돌려준다
+const tilesetRoots = new Map();     // id → 폴더 절대경로
+let tilesetRootSeq = 0;
+ipcMain.on('register-tileset-root', (event, dir) => {
+    try {
+        const abs = path.resolve(dir);
+        for (const [id, d] of tilesetRoots) {
+            if (d === abs) return (event.returnValue = { id, port: localFileServerPort });
+        }
+        const id = ++tilesetRootSeq;
+        tilesetRoots.set(id, abs);
+        event.returnValue = { id, port: localFileServerPort };
+    } catch (e) {
+        event.returnValue = { error: e.message };
+    }
+});
 
 ipcMain.handle('get-local-file-url', async (event, filePath) => {
     await ensureLocalFileServer();

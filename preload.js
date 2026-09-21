@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => shell.openExternal(url),
   getLocalFileUrl: (filePath) => ipcRenderer.invoke('get-local-file-url', filePath),
   getLocalServerPort: () => ipcRenderer.sendSync('get-local-server-port'),
+  registerTilesetRoot: (dir) => ipcRenderer.sendSync('register-tileset-root', dir),
   listEngineReleases: () => ipcRenderer.invoke('list-engine-releases'),
   ensureWorker: (version, urlTemplate) => ipcRenderer.invoke('ensure-worker', version, urlTemplate),
   listCachedWorkers: () => ipcRenderer.invoke('list-cached-workers'),
