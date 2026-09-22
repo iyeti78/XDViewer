@@ -1,5 +1,5 @@
 # 🎯 XDViewer
-[![Version](https://img.shields.io/badge/Version-1.0.5-orange)](package.json)
+[![Version](https://img.shields.io/badge/Version-1.0.6-orange)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-v22-brightgreen)](https://nodejs.org/)
 [![Electron](https://img.shields.io/badge/Electron-v37-blue)](https://www.electronjs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
@@ -183,6 +183,14 @@ $ npx electron-builder --publish never   # GitHub 업로드 없이 로컬 빌드
 - 🧭 GeoJSON / CSV(위경도 포인트), 🧊 glTF / 3DS 모델
 
 ## 📦 7. **변경 이력**
+- **1.0.6** (2026-09-22)
+  - 엔진 버전 선택: 설정 패널에서 공식 배포 버전을 고르면 워커도 같은 버전으로 자동 교체
+  - 우주 배경(별상자): 줌아웃하면 지구본 뒤로 별하늘. 텍스처를 앱에 동봉해 오프라인에서도 표시
+  - 지형 고도 색상(해저 포함, 과학계 표준 컬러맵)과 부드러운 DEM 색상 영상
+  - 지형 배율(수직 과장): 기본 VWorld 지형까지 프록시로 배율 적용, 메시 업샘플로 부드럽게
+  - 3D Tiles: 불러오면 지형 높이에 자동 안착, 고도 offset·포인트 크기·색상 표현·상세도 설정(우클릭 → 설정)
+  - 타일 비율(LOD), 새로고침 버튼, 전체화면 버튼, 마지막 카메라 위치 기억
+  - 수심 DEM에서 해수면 아래 카메라 보호, 경로·URL 입력으로 레이어 추가
 - **1.0.5** (2026-09-03)
   - SQLite 타일 패키지 드롭 로딩: GeoPackage/sdb 영상, sdb 지형(bil), GeoPackage 표고 커버리지(TIFF) 회색조 영상
   - 레이어 목록 종류 아이콘
